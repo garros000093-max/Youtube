@@ -1,265 +1,233 @@
 """
-Video Producer - Assembles the final video
-Stock footage from Pexels + voiceover + background music + thumbnail
+Video Producer - Assembles video using ffmpeg directly (no MoviePy)
+Stock footage from Pexels + voiceover + thumbnail via Pillow
 """
 
 import os
-import re
+import subprocess
 import logging
 import requests
 import random
 import textwrap
 from pathlib import Path
-from moviepy.editor import (
-    VideoFileClip, AudioFileClip, CompositeVideoClip,
-    concatenate_videoclips, ColorClip, TextClip
-)
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-
-# Fix Pillow ANTIALIAS deprecation (Pillow >= 10.0)
-if not hasattr(__import__("PIL").Image, "ANTIALIAS"):
-    __import__("PIL").Image.ANTIALIAS = __import__("PIL").Image.LANCZOS
 
 log = logging.getLogger(__name__)
 
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
-# Dark cinematic background music (royalty-free URLs - replace with your own)
-BACKGROUND_MUSIC = [
-    "https://www.soundjay.com/misc/sounds/dark-ambient-01.mp3",  # placeholder
-]
-
-# Thumbnail styles
-THUMBNAIL_COLORS = [
-    {"bg": "#0a0a0a", "accent": "#FF0000", "text": "#FFFFFF"},
-    {"bg": "#1a0a2e", "accent": "#FF6B00", "text": "#FFFFFF"},
-    {"bg": "#0d1b2a", "accent": "#00D4FF", "text": "#FFFFFF"},
+THUMBNAIL_STYLES = [
+    {"bg": (10, 10, 10),    "accent": (220, 0, 0),   "text": (255, 255, 255)},
+    {"bg": (26, 10, 46),    "accent": (255, 107, 0),  "text": (255, 255, 255)},
+    {"bg": (13, 27, 42),    "accent": (0, 212, 255),  "text": (255, 255, 255)},
 ]
 
 
 class VideoProducer:
     def __init__(self):
-        self.pexels_key = PEXELS_API_KEY
         self.output_dir = Path("/tmp/video_output")
         self.output_dir.mkdir(exist_ok=True)
 
-    # ─── Stock Footage ───────────────────────────────────────────────────────
+    # ─── Pexels ──────────────────────────────────────────────────────────────
 
-    def search_pexels_videos(self, query: str, count: int = 5) -> list:
-        """Fetch stock video URLs from Pexels"""
+    def search_pexels(self, query: str, count: int = 4, portrait: bool = False) -> list:
         url = "https://api.pexels.com/videos/search"
-        headers = {"Authorization": self.pexels_key}
+        headers = {"Authorization": PEXELS_API_KEY}
         params = {
             "query": query,
             "per_page": count,
-            "orientation": "landscape",
-            "size": "medium"
+            "orientation": "portrait" if portrait else "landscape"
         }
         try:
             r = requests.get(url, headers=headers, params=params, timeout=15)
             r.raise_for_status()
-            videos = r.json().get("videos", [])
             links = []
-            for v in videos:
-                for file in v.get("video_files", []):
-                    if file.get("quality") == "hd" and file.get("width", 0) >= 1280:
-                        links.append(file["link"])
-                        break
+            for v in r.json().get("videos", []):
+                for f in v.get("video_files", []):
+                    w, h = f.get("width", 0), f.get("height", 0)
+                    if portrait and w < h and w >= 360:
+                        links.append(f["link"]); break
+                    elif not portrait and w >= 1280:
+                        links.append(f["link"]); break
             return links[:count]
         except Exception as e:
-            log.warning(f"Pexels search failed for '{query}': {e}")
+            log.warning(f"Pexels failed for '{query}': {e}")
             return []
 
-    def search_pexels_vertical(self, query: str, count: int = 5) -> list:
-        """Fetch vertical stock videos for Shorts"""
-        url = "https://api.pexels.com/videos/search"
-        headers = {"Authorization": self.pexels_key}
-        params = {
-            "query": query,
-            "per_page": count,
-            "orientation": "portrait"
-        }
+    def download_video(self, url: str, path: str) -> bool:
         try:
-            r = requests.get(url, headers=headers, params=params, timeout=15)
+            r = requests.get(url, stream=True, timeout=60)
             r.raise_for_status()
-            videos = r.json().get("videos", [])
-            links = []
-            for v in videos:
-                for file in v.get("video_files", []):
-                    if file.get("width", 0) <= file.get("height", 1):
-                        links.append(file["link"])
-                        break
-            return links[:count]
+            with open(path, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+            return True
         except Exception as e:
-            log.warning(f"Pexels vertical search failed: {e}")
-            return []
+            log.warning(f"Download failed: {e}")
+            return False
 
-    def download_video(self, url: str, path: str) -> str:
-        """Download a video file"""
-        r = requests.get(url, stream=True, timeout=60)
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return path
+    # ─── ffmpeg helpers ───────────────────────────────────────────────────────
 
-    # ─── Video Assembly ───────────────────────────────────────────────────────
+    def run_ffmpeg(self, cmd: list) -> bool:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y"] + cmd,
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode != 0:
+                log.warning(f"ffmpeg error: {result.stderr[-300:]}")
+            return result.returncode == 0
+        except Exception as e:
+            log.warning(f"ffmpeg failed: {e}")
+            return False
 
-    def build_video(self, audio_path: str, video_urls: list, output_path: str,
-                    shorts: bool = False) -> str:
-        """Assemble video from audio + stock clips"""
-        audio = AudioFileClip(audio_path)
-        total_duration = audio.duration
+    def get_audio_duration(self, audio_path: str) -> float:
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries",
+                 "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+                capture_output=True, text=True, timeout=30
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return 60.0
+
+    def build_video(self, audio_path: str, video_urls: list,
+                    output_path: str, shorts: bool = False) -> str:
+        """Assemble video: download clips → trim/loop → concat → add audio"""
+        duration = self.get_audio_duration(audio_path)
+        log.info(f"Audio duration: {duration:.1f}s")
 
         target_w, target_h = (1080, 1920) if shorts else (1920, 1080)
-        clips = []
+        clip_duration = duration / max(len(video_urls), 1)
 
-        for i, url in enumerate(video_urls):
-            clip_path = f"/tmp/clip_{i}.mp4"
-            try:
-                self.download_video(url, clip_path)
-                clip = VideoFileClip(clip_path)
+        # Download and process each clip
+        processed = []
+        for i, url in enumerate(video_urls[:6]):
+            raw = f"/tmp/raw_{i}.mp4"
+            proc = f"/tmp/proc_{i}.mp4"
 
-                # Resize & crop to target aspect ratio
-                clip = clip.resize(height=target_h) if shorts else clip.resize(width=target_w)
-                clip = clip.crop(
-                    x_center=clip.w / 2,
-                    y_center=clip.h / 2,
-                    width=target_w,
-                    height=target_h
-                )
+            if not self.download_video(url, raw):
+                continue
 
-                # Loop clip if too short
-                segment_duration = total_duration / len(video_urls)
-                if clip.duration < segment_duration:
-                    clip = clip.loop(duration=segment_duration)
-                else:
-                    clip = clip.subclip(0, segment_duration)
+            # Resize + crop + trim to clip_duration
+            vf = (
+                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+                f"crop={target_w}:{target_h},"
+                f"eq=brightness=-0.1:saturation=0.9"
+            )
+            ok = self.run_ffmpeg([
+                "-i", raw,
+                "-vf", vf,
+                "-t", str(clip_duration),
+                "-r", "30",
+                "-c:v", "libx264", "-preset", "fast",
+                "-an", proc
+            ])
+            if ok:
+                processed.append(proc)
+                log.info(f"Clip {i+1} ready")
 
-                # Slight brightness reduction for dark cinematic feel
-                clip = clip.fl_image(lambda f: (f * 0.75).astype(np.uint8))
-                clips.append(clip)
+        # Fallback: black video if no clips
+        if not processed:
+            log.warning("No clips — using black video")
+            black = "/tmp/black.mp4"
+            self.run_ffmpeg([
+                "-f", "lavfi", "-i", f"color=c=black:size={target_w}x{target_h}:rate=30",
+                "-t", str(duration), "-c:v", "libx264", black
+            ])
+            processed = [black]
 
-            except Exception as e:
-                log.warning(f"Failed to process clip {i}: {e}")
-                # Use black fallback clip
-                clips.append(ColorClip(size=(target_w, target_h),
-                                       color=(10, 10, 10),
-                                       duration=total_duration / len(video_urls)))
+        # Create concat list
+        concat_list = "/tmp/concat.txt"
+        with open(concat_list, "w") as f:
+            for p in processed:
+                f.write(f"file '{p}'\n")
 
-        if not clips:
-            clips = [ColorClip(size=(target_w, target_h),
-                               color=(10, 10, 10),
-                               duration=total_duration)]
+        # Concat all clips
+        concat_out = "/tmp/concat_out.mp4"
+        self.run_ffmpeg([
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list,
+            "-c", "copy", concat_out
+        ])
 
-        final_video = concatenate_videoclips(clips, method="compose")
-        final_video = final_video.subclip(0, total_duration)
-        final_video = final_video.set_audio(audio)
+        # Trim to exact audio duration + add audio
+        self.run_ffmpeg([
+            "-i", concat_out,
+            "-i", audio_path,
+            "-t", str(duration),
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-shortest",
+            output_path
+        ])
 
-        final_video.write_videofile(
-            output_path,
-            fps=30,
-            codec="libx264",
-            audio_codec="aac",
-            threads=4,
-            preset="fast",
-            logger=None
-        )
-
-        log.info(f"✅ Video assembled: {output_path}")
+        log.info(f"✅ Video built: {output_path}")
         return output_path
 
     # ─── Thumbnail ────────────────────────────────────────────────────────────
 
     def create_thumbnail(self, title: str, output_path: str) -> str:
-        """Create eye-catching thumbnail with PIL"""
-        style = random.choice(THUMBNAIL_COLORS)
+        style = random.choice(THUMBNAIL_STYLES)
         img = Image.new("RGB", (1280, 720), color=style["bg"])
         draw = ImageDraw.Draw(img)
 
-        # Gradient overlay
-        for y in range(720):
-            alpha = int(30 * (y / 720))
-            draw.line([(0, y), (1280, y)], fill=(alpha, 0, 0))
-
-        # Red accent bar on left
+        # Left accent bar
         draw.rectangle([0, 0, 8, 720], fill=style["accent"])
 
-        # "TRUE STORY" badge
-        draw.rectangle([60, 40, 280, 90], fill=style["accent"])
+        # Top badge
+        draw.rectangle([30, 30, 260, 80], fill=style["accent"])
+
         try:
-            badge_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
-            sub_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            font_sm = ImageFont.truetype(font_path, 26)
+            font_lg = ImageFont.truetype(font_path, 68)
+            font_md = ImageFont.truetype(font_path, 34)
         except Exception:
-            badge_font = title_font = sub_font = ImageFont.load_default()
+            font_sm = font_lg = font_md = ImageFont.load_default()
 
-        draw.text((80, 48), "● TRUE STORY", fill="white", font=badge_font)
+        draw.text((50, 42), "● TRUE STORY", fill="white", font=font_sm)
 
-        # Main title (word wrap)
-        words = title.upper()
-        lines = textwrap.wrap(words, width=20)[:3]
-        y_start = 150
+        # Title lines
+        lines = textwrap.wrap(title.upper(), width=22)[:3]
+        y = 120
         for line in lines:
-            draw.text((60, y_start), line, fill=style["text"], font=title_font)
-            # Shadow effect
-            draw.text((63, y_start + 3), line, fill=(0, 0, 0, 100), font=title_font)
-            y_start += 85
+            # Shadow
+            draw.text((52, y + 3), line, fill=(0, 0, 0), font=font_lg)
+            draw.text((50, y), line, fill=style["text"], font=font_lg)
+            y += 82
 
         # Bottom bar
         draw.rectangle([0, 650, 1280, 720], fill=style["accent"])
-        draw.text((60, 658), "WATCH TILL THE END 👇", fill="white", font=sub_font)
+        draw.text((50, 660), "WATCH TILL THE END  👇", fill="white", font=font_md)
 
-        # Add noise for cinematic feel
+        # Subtle noise
         arr = np.array(img).astype(np.float32)
-        noise = np.random.normal(0, 8, arr.shape)
-        arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
+        arr = np.clip(arr + np.random.normal(0, 6, arr.shape), 0, 255).astype(np.uint8)
         img = Image.fromarray(arr)
 
         img.save(output_path, "JPEG", quality=95)
-        log.info(f"✅ Thumbnail created: {output_path}")
+        log.info(f"✅ Thumbnail: {output_path}")
         return output_path
 
-    # ─── Main Entry ──────────────────────────────────────────────────────────
+    # ─── Main ─────────────────────────────────────────────────────────────────
 
     def produce(self, script_data: dict, shorts: bool = False) -> tuple:
-        """Full video production pipeline"""
         topic = script_data["topic"]
-        trend = topic["trend"]
+        queries = [topic["trend"], topic["category"], "dark mystery", "suspense"]
 
-        # Search for relevant stock footage
-        search_queries = [trend, topic["category"], "dark mystery", "crime scene"]
-        all_urls = []
-
-        for query in search_queries[:3]:
-            if shorts:
-                urls = self.search_pexels_vertical(query, count=3)
-            else:
-                urls = self.search_pexels_videos(query, count=3)
-            all_urls.extend(urls)
-            if len(all_urls) >= 6:
+        urls = []
+        for q in queries[:3]:
+            urls += self.search_pexels(q, count=3, portrait=shorts)
+            if len(urls) >= 6:
                 break
-
-        if not all_urls:
-            log.warning("No stock footage found, using color clips")
 
         suffix = "shorts" if shorts else "main"
         video_path = str(self.output_dir / f"video_{suffix}.mp4")
-        thumb_path = str(self.output_dir / f"thumbnail_{suffix}.jpg")
+        thumb_path = str(self.output_dir / f"thumb_{suffix}.jpg")
 
-        # Build video
-        self.build_video(
-            audio_path=script_data["audio_path"],
-            video_urls=all_urls[:6],
-            output_path=video_path,
-            shorts=shorts
-        )
-
-        # Create thumbnail
-        self.create_thumbnail(
-            title=script_data["title"][:50],
-            output_path=thumb_path
-        )
+        self.build_video(script_data["audio_path"], urls, video_path, shorts)
+        self.create_thumbnail(script_data["title"][:50], thumb_path)
 
         return video_path, thumb_path
