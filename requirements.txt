@@ -3,10 +3,11 @@ requests>=2.31.0
 schedule>=1.2.0
 pytrends>=4.9.0
 moviepy==1.0.3
-Pillow==9.5.0
+Pillow>=10.0.0
 numpy>=1.24.0
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.0
 google-auth-oauthlib>=1.0.0
-imageio==2.25.1
+imageio>=2.25.1
 imageio-ffmpeg>=0.4.7
+decorator==4.4.2
