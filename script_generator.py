@@ -12,11 +12,11 @@ from openai import OpenAI
 
 log = logging.getLogger(__name__)
 
-# ElevenLabs American voice IDs (free tier voices)
+# ElevenLabs American voice IDs (free tier - premade voices)
 AMERICAN_VOICES = {
-    "male_dramatic": "TxGEqnHWrfWFTfGW9XjX",    # Josh - deep dramatic
-    "female_mystery": "EXAVITQu4vr4xnSDxMaL",    # Bella - storytelling
-    "male_narrator": "VR6AewLTigWG4xSOukaG",     # Arnold - authoritative
+    "male_dramatic": "pNInz6obpgDQGcFmaJgB",    # Adam - deep American
+    "female_mystery": "21m00Tcm4TlvDq8ikWAM",   # Rachel - American female
+    "male_narrator": "ErXwobaYiN019PkySvjV",     # Antoni - American male
 }
 
 
@@ -26,10 +26,8 @@ class ScriptGenerator:
         self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
     def write_script(self, topic: dict, shorts: bool = False) -> str:
-        """Use GPT-4o to write a viral story script"""
         if shorts:
             prompt = f"""Write a 45-second YouTube Shorts script about: "{topic['trend']}"
-
 Style: Shocking, fast-paced, hook in first 3 seconds
 Format: Just the narration text, no stage directions
 Hook: Start with "Wait until you hear this..." or similar
@@ -38,75 +36,59 @@ Length: Exactly 100-120 words
 Voice: American, conversational, dramatic"""
         else:
             prompt = f"""Write a 8-10 minute YouTube video script about: "{topic['title']}"
-
 Topic: {topic['trend']}
 Category: {topic['category']}
-
 Requirements:
-- Hook in first 15 seconds (make viewer NEED to keep watching)
-- 5-7 dramatic segments, each building tension
+- Hook in first 15 seconds
+- 5-7 dramatic segments building tension
 - Use "But here's where it gets DARK..." type transitions
-- End with a shocking revelation or twist
+- End with a shocking revelation
 - American English, conversational but dramatic
-- Include natural pauses with "..." 
-- Target audience: Americans 18-35
-- Length: 1200-1500 words (narration only, no stage directions)
-
-Start directly with the hook, no introduction."""
+- Length: 1200-1500 words (narration only)
+Start directly with the hook."""
 
         response = self.client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a viral YouTube scriptwriter specializing in true crime and mystery content for American audiences. Your scripts get millions of views."
-                },
+                {"role": "system", "content": "You are a viral YouTube scriptwriter for American audiences."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.8,
             max_tokens=2000
         )
-
         return response.choices[0].message.content
 
     def generate_seo_metadata(self, topic: dict, script: str) -> dict:
-        """Generate SEO-optimized title, description, tags"""
-        prompt = f"""Based on this YouTube script, generate SEO metadata optimized for American viewers.
-
+        prompt = f"""Based on this YouTube script, generate SEO metadata for American viewers.
 Topic: {topic['trend']}
 Script preview: {script[:300]}...
-
-Return ONLY a JSON object with:
+Return ONLY a JSON object:
 {{
   "title": "Clickbait but honest title (max 70 chars)",
-  "description": "SEO description with keywords, 200-300 words, includes timestamps",
-  "tags": ["tag1", "tag2", ...] (30 tags, mix of broad and specific),
+  "description": "SEO description 200-300 words with timestamps",
+  "tags": ["tag1", "tag2"] (30 tags),
   "category": "22"
 }}"""
-
         response = self.client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=800
         )
-
-        text = response.choices[0].message.content
-        # Clean JSON
-        text = re.sub(r"```json|```", "", text).strip()
+        text = re.sub(r"```json|```", "", response.choices[0].message.content).strip()
         try:
             return json.loads(text)
         except Exception:
             return {
                 "title": topic["title"][:70],
-                "description": f"The shocking true story of {topic['trend']}. Don't miss this!",
+                "description": f"The shocking true story of {topic['trend']}.",
                 "tags": topic["keywords"] + ["true story", "shocking", "mystery", "viral"],
                 "category": "22"
             }
 
     def text_to_speech(self, text: str, output_path: str, shorts: bool = False) -> str:
-        """Convert script to American voice using ElevenLabs"""
         voice_id = AMERICAN_VOICES["male_dramatic"] if not shorts else AMERICAN_VOICES["female_mystery"]
+        text = text[:2500]  # Free tier limit
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {
@@ -115,18 +97,19 @@ Return ONLY a JSON object with:
         }
         payload = {
             "text": text,
-            "model_id": "eleven_monolingual_v1",
+            "model_id": "eleven_multilingual_v2",
             "voice_settings": {
-                "stability": 0.4,
-                "similarity_boost": 0.8,
-                "style": 0.6,
-                "use_speaker_boost": True
+                "stability": 0.5,
+                "similarity_boost": 0.75
             }
         }
 
-        log.info("Generating voiceover with ElevenLabs...")
+        log.info(f"Generating voiceover (voice_id: {voice_id})...")
         r = requests.post(url, json=payload, headers=headers, timeout=120)
-        r.raise_for_status()
+
+        if r.status_code != 200:
+            log.error(f"ElevenLabs {r.status_code}: {r.text[:300]}")
+            r.raise_for_status()
 
         with open(output_path, "wb") as f:
             f.write(r.content)
@@ -135,15 +118,11 @@ Return ONLY a JSON object with:
         return output_path
 
     def generate(self, topic: dict, shorts: bool = False) -> dict:
-        """Full pipeline: write script → metadata → voiceover"""
-        # Write script
         script = self.write_script(topic, shorts)
         log.info(f"Script written ({len(script)} chars)")
 
-        # Generate metadata
         metadata = self.generate_seo_metadata(topic, script)
 
-        # Generate voiceover
         audio_path = f"/tmp/voiceover_{'shorts' if shorts else 'main'}.mp3"
         self.text_to_speech(script, audio_path, shorts)
 
