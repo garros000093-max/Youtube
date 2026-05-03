@@ -1,6 +1,6 @@
 """
 Script Generator - Writes viral story scripts + generates American voiceover
-Uses GPT-4o for writing and ElevenLabs for voice synthesis
+Uses GPT-4o for writing and OpenAI TTS for voice (no proxy issues)
 """
 
 import os
@@ -12,18 +12,10 @@ from openai import OpenAI
 
 log = logging.getLogger(__name__)
 
-# ElevenLabs American voice IDs (free tier - premade voices)
-AMERICAN_VOICES = {
-    "male_dramatic": "pNInz6obpgDQGcFmaJgB",    # Adam - deep American
-    "female_mystery": "21m00Tcm4TlvDq8ikWAM",   # Rachel - American female
-    "male_narrator": "ErXwobaYiN019PkySvjV",     # Antoni - American male
-}
-
 
 class ScriptGenerator:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
 
     def write_script(self, topic: dict, shorts: bool = False) -> str:
         if shorts:
@@ -39,18 +31,23 @@ Voice: American, conversational, dramatic"""
 Topic: {topic['trend']}
 Category: {topic['category']}
 Requirements:
-- Hook in first 15 seconds
-- 5-7 dramatic segments building tension
+- Hook in first 15 seconds (make viewer NEED to keep watching)
+- 5-7 dramatic segments, each building tension
 - Use "But here's where it gets DARK..." type transitions
-- End with a shocking revelation
+- End with a shocking revelation or twist
 - American English, conversational but dramatic
-- Length: 1200-1500 words (narration only)
-Start directly with the hook."""
+- Include natural pauses with "..."
+- Target audience: Americans 18-35
+- Length: 1200-1500 words (narration only, no stage directions)
+Start directly with the hook, no introduction."""
 
         response = self.client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a viral YouTube scriptwriter for American audiences."},
+                {
+                    "role": "system",
+                    "content": "You are a viral YouTube scriptwriter specializing in true crime and mystery content for American audiences. Your scripts get millions of views."
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.8,
@@ -59,16 +56,17 @@ Start directly with the hook."""
         return response.choices[0].message.content
 
     def generate_seo_metadata(self, topic: dict, script: str) -> dict:
-        prompt = f"""Based on this YouTube script, generate SEO metadata for American viewers.
+        prompt = f"""Based on this YouTube script, generate SEO metadata optimized for American viewers.
 Topic: {topic['trend']}
 Script preview: {script[:300]}...
-Return ONLY a JSON object:
+Return ONLY a JSON object with:
 {{
   "title": "Clickbait but honest title (max 70 chars)",
-  "description": "SEO description 200-300 words with timestamps",
-  "tags": ["tag1", "tag2"] (30 tags),
+  "description": "SEO description with keywords, 200-300 words, includes timestamps",
+  "tags": ["tag1", "tag2"] (30 tags, mix of broad and specific),
   "category": "22"
 }}"""
+
         response = self.client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
@@ -87,37 +85,61 @@ Return ONLY a JSON object:
             }
 
     def text_to_speech(self, text: str, output_path: str, shorts: bool = False) -> str:
-        voice_id = AMERICAN_VOICES["male_dramatic"] if not shorts else AMERICAN_VOICES["female_mystery"]
-        text = text[:2500]  # Free tier limit
+        """Convert script to American voice using OpenAI TTS"""
 
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-        headers = {
-            "xi-api-key": self.elevenlabs_key,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "text": text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            }
-        }
+        # OpenAI TTS voices - all American English
+        voice = "onyx" if not shorts else "nova"
+        # onyx = deep dramatic male, nova = energetic female
 
-        log.info(f"Generating voiceover (voice_id: {voice_id})...")
-        r = requests.post(url, json=payload, headers=headers, timeout=120)
+        # OpenAI TTS max 4096 chars per request — split if needed
+        chunks = []
+        max_len = 4000
+        words = text.split()
+        current = []
+        current_len = 0
 
-        if r.status_code != 200:
-            log.error(f"ElevenLabs {r.status_code}: {r.text[:300]}")
-            r.raise_for_status()
+        for word in words:
+            current_len += len(word) + 1
+            current.append(word)
+            if current_len >= max_len:
+                chunks.append(" ".join(current))
+                current = []
+                current_len = 0
+        if current:
+            chunks.append(" ".join(current))
 
-        with open(output_path, "wb") as f:
-            f.write(r.content)
+        log.info(f"Generating voiceover with OpenAI TTS (voice: {voice}, chunks: {len(chunks)})...")
+
+        # Generate each chunk and combine
+        audio_parts = []
+        for i, chunk in enumerate(chunks):
+            response = self.client.audio.speech.create(
+                model="tts-1",
+                voice=voice,
+                input=chunk,
+                speed=1.05  # Slightly faster = more engaging
+            )
+            chunk_path = f"/tmp/tts_chunk_{i}.mp3"
+            response.stream_to_file(chunk_path)
+            audio_parts.append(chunk_path)
+            log.info(f"  Chunk {i+1}/{len(chunks)} done")
+
+        # Combine chunks if multiple
+        if len(audio_parts) == 1:
+            import shutil
+            shutil.copy(audio_parts[0], output_path)
+        else:
+            # Concatenate mp3 files
+            with open(output_path, "wb") as out:
+                for part_path in audio_parts:
+                    with open(part_path, "rb") as f:
+                        out.write(f.read())
 
         log.info(f"✅ Voiceover saved: {output_path}")
         return output_path
 
     def generate(self, topic: dict, shorts: bool = False) -> dict:
+        """Full pipeline: write script → metadata → voiceover"""
         script = self.write_script(topic, shorts)
         log.info(f"Script written ({len(script)} chars)")
 
