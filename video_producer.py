@@ -17,6 +17,10 @@ from moviepy.editor import (
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
 
+# Fix Pillow ANTIALIAS deprecation (Pillow >= 10.0)
+if not hasattr(__import__("PIL").Image, "ANTIALIAS"):
+    __import__("PIL").Image.ANTIALIAS = __import__("PIL").Image.LANCZOS
+
 log = logging.getLogger(__name__)
 
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
