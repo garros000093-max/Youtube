@@ -61,7 +61,7 @@ class YouTubeUploader:
             "snippet": {
                 "title": title[:100],
                 "description": self._build_description(metadata, shorts),
-                "tags": metadata.get("tags", [])[:30],
+                "tags": self._clean_tags(metadata.get("tags", [])),
                 "categoryId": metadata.get("category", "22"),
                 "defaultLanguage": "en",
                 "defaultAudioLanguage": "en"
@@ -109,6 +109,20 @@ class YouTubeUploader:
             log.warning(f"Thumbnail upload failed (needs verified account): {e}")
 
         return video_id
+
+    def _clean_tags(self, tags: list) -> list:
+        """Remove invalid tags that YouTube rejects"""
+        banned = ["youtube", "youtuber", "subscribe", "viral", "trending",
+                  "youtube.video", "video", "shorts", "short"]
+        cleaned = []
+        for tag in tags:
+            tag = tag.strip()
+            # Max 30 chars per tag, no special chars, not banned
+            if (tag and len(tag) <= 30 and
+                tag.lower() not in banned and
+                "<" not in tag and ">" not in tag):
+                cleaned.append(tag)
+        return cleaned[:15]  # Max 15 safe tags
 
     def _build_description(self, metadata: dict, shorts: bool) -> str:
         """Build SEO-optimized description with affiliate links"""
