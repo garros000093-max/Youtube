@@ -14,10 +14,11 @@ import time
 
 log = logging.getLogger(__name__)
 
+# IMPORTANT: Only youtube.upload scope
+# Adding youtube / youtube.force-ssl / youtubepartner causes youtubeSignupRequired
+# unless Google has manually verified your app
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube",
-    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 
@@ -27,7 +28,6 @@ class YouTubeUploader:
         self.youtube = self._authenticate()
 
     def _authenticate(self):
-        """Authenticate using refresh token stored in Railway variables"""
         refresh_token  = os.getenv("YOUTUBE_REFRESH_TOKEN")
         client_id      = os.getenv("GOOGLE_CLIENT_ID")
         client_secret  = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -47,14 +47,10 @@ class YouTubeUploader:
             scopes=SCOPES
         )
 
-        # Force refresh to get a valid access token
         self._refresh_credentials()
-
-        # cache_discovery=False prevents the file_cache warning and errors
         return build("youtube", "v3", credentials=self.creds, cache_discovery=False)
 
     def _refresh_credentials(self):
-        """Refresh credentials with retry logic"""
         for attempt in range(3):
             try:
                 self.creds.refresh(Request())
@@ -65,38 +61,30 @@ class YouTubeUploader:
                 if attempt < 2:
                     time.sleep(2 ** attempt)
         raise RuntimeError(
-            "Failed to refresh YouTube credentials after 3 attempts. "
-            "Your YOUTUBE_REFRESH_TOKEN may be expired — re-run auth_setup.py."
+            "Failed to refresh YouTube token after 3 attempts. "
+            "Re-run auth_setup.py to get a new refresh token."
         )
 
     def _rebuild_client(self):
-        """Rebuild YouTube client with fresh credentials (called on 401)"""
-        log.info("Refreshing credentials due to a 401 response...")
         self._refresh_credentials()
         self.youtube = build("youtube", "v3", credentials=self.creds, cache_discovery=False)
 
     def upload(self, video_path: str, thumbnail_path: str,
                metadata: dict, shorts: bool = False) -> str:
-        """Upload video to YouTube and set thumbnail"""
 
-        title = metadata["title"]
+        title = metadata.get("title", "Untitled")
         if shorts and "#shorts" not in title.lower():
             title = title[:60] + " #shorts"
 
-        snippet = {
-            "title": title[:100],
-            "description": self._build_description(metadata, shorts),
-            "tags": self._clean_tags(metadata.get("tags", [])),
-            "categoryId": metadata.get("category", "22"),
-            "defaultLanguage": "en",
-            "defaultAudioLanguage": "en"
-        }
-
-        # For Brand Account / specific channel
-        channel_id = os.getenv("YOUTUBE_CHANNEL_ID", "").strip()
-
         body = {
-            "snippet": snippet,
+            "snippet": {
+                "title": title[:100],
+                "description": self._build_description(metadata, shorts),
+                "tags": self._clean_tags(metadata.get("tags", [])),
+                "categoryId": "22",
+                "defaultLanguage": "en",
+                "defaultAudioLanguage": "en"
+            },
             "status": {
                 "privacyStatus": "public",
                 "selfDeclaredMadeForKids": False,
@@ -105,132 +93,65 @@ class YouTubeUploader:
         }
 
         log.info(f"Uploading video: {title}")
-        media = MediaFileUpload(
-            video_path,
-            chunksize=50 * 1024 * 1024,  # 50MB chunks
-            resumable=True,
-            mimetype="video/mp4"
-        )
 
-        # Retry upload once if we get a 401
         for attempt in range(2):
             try:
+                media = MediaFileUpload(
+                    video_path,
+                    chunksize=50 * 1024 * 1024,
+                    resumable=True,
+                    mimetype="video/mp4"
+                )
                 request = self.youtube.videos().insert(
                     part="snippet,status",
                     body=body,
                     media_body=media
                 )
-
                 response = None
                 while response is None:
                     status, response = request.next_chunk()
                     if status:
-                        pct = int(status.progress() * 100)
-                        log.info(f"Upload progress: {pct}%")
-
-                break  # Success
+                        log.info(f"Upload progress: {int(status.progress() * 100)}%")
+                break
 
             except HttpError as e:
                 if e.resp.status == 401 and attempt == 0:
                     log.warning("Got 401 during upload, refreshing token and retrying...")
                     self._rebuild_client()
-                    # Re-create media upload (stream was partially consumed)
-                    media = MediaFileUpload(
-                        video_path,
-                        chunksize=50 * 1024 * 1024,
-                        resumable=True,
-                        mimetype="video/mp4"
-                    )
                     continue
                 raise
 
         video_id = response["id"]
-        log.info(f"✅ Video uploaded: {video_id}")
+        log.info(f"✅ Video uploaded: https://youtube.com/watch?v={video_id}")
 
-        # Set thumbnail
         try:
             self.youtube.thumbnails().set(
                 videoId=video_id,
                 media_body=MediaFileUpload(thumbnail_path)
             ).execute()
             log.info("✅ Thumbnail set")
-        except HttpError as e:
-            log.warning(f"Thumbnail upload failed (needs verified account): {e}")
         except Exception as e:
-            log.warning(f"Thumbnail upload failed: {e}")
+            log.warning(f"Thumbnail skipped: {e}")
 
         return video_id
 
     def _clean_tags(self, tags: list) -> list:
-        """Remove invalid tags that YouTube rejects"""
         banned = {"youtube", "youtuber", "subscribe", "viral", "trending",
                   "youtube.video", "video", "shorts", "short"}
         cleaned = []
         for tag in tags:
             tag = tag.strip()
-            if (tag and len(tag) <= 30 and
-                tag.lower() not in banned and
-                "<" not in tag and ">" not in tag):
+            if tag and len(tag) <= 30 and tag.lower() not in banned:
                 cleaned.append(tag)
-        return cleaned[:15]  # Max 15 safe tags
+        return cleaned[:15]
 
     def _build_description(self, metadata: dict, shorts: bool) -> str:
-        """Build SEO-optimized description"""
-        base_desc = metadata.get("description", "")
-
-        affiliate_section = """
+        base = metadata.get("description", "")
+        footer = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔔 SUBSCRIBE for daily shocking stories
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📚 Recommended Books on True Crime:
-👉 https://amzn.to/YOUR_AFFILIATE_LINK_HERE
-
-🎧 Listen on Spotify: [Your Podcast Link]
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #TrueCrime #Mystery #ShockingStory #Viral #TrueStory
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚠️ This video is for educational and entertainment purposes only.
+⚠️ For educational and entertainment purposes only.
 """
-        return base_desc + affiliate_section
-
-    def update_underperforming(self, video_id: str, new_title: str, new_thumbnail: str = None):
-        """Update title/thumbnail for videos with low CTR"""
-        log.info(f"Updating video {video_id} with new title: {new_title}")
-
-        self.youtube.videos().update(
-            part="snippet",
-            body={
-                "id": video_id,
-                "snippet": {
-                    "title": new_title[:100],
-                    "categoryId": "22"
-                }
-            }
-        ).execute()
-
-        if new_thumbnail:
-            self.youtube.thumbnails().set(
-                videoId=video_id,
-                media_body=MediaFileUpload(new_thumbnail)
-            ).execute()
-
-        log.info(f"✅ Video {video_id} updated")
-
-    def get_analytics(self, video_id: str) -> dict:
-        """Get basic video stats"""
-        response = self.youtube.videos().list(
-            part="statistics",
-            id=video_id
-        ).execute()
-
-        if response["items"]:
-            stats = response["items"][0]["statistics"]
-            return {
-                "views": int(stats.get("viewCount", 0)),
-                "likes": int(stats.get("likeCount", 0)),
-                "comments": int(stats.get("commentCount", 0))
-            }
-        return {}
+        return base + footer
