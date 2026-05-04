@@ -95,75 +95,64 @@ class VideoProducer:
 
     def build_video(self, audio_path: str, video_urls: list,
                     output_path: str, shorts: bool = False) -> str:
-        """Assemble video: download clips → trim/loop → concat → add audio"""
+        """Assemble video using ffmpeg directly"""
+        import os
         duration = self.get_audio_duration(audio_path)
         log.info(f"Audio duration: {duration:.1f}s")
-
         target_w, target_h = (1080, 1920) if shorts else (1920, 1080)
-        clip_duration = duration / max(len(video_urls), 1)
 
-        # Download and process each clip
-        processed = []
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # Try to download and use first working clip
+        video_input = None
         for i, url in enumerate(video_urls[:6]):
             raw = f"/tmp/raw_{i}.mp4"
-            proc = f"/tmp/proc_{i}.mp4"
-
             if not self.download_video(url, raw):
                 continue
+            # Test if file is valid
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-i", raw],
+                capture_output=True, timeout=15
+            )
+            if result.returncode == 0:
+                video_input = raw
+                log.info(f"Using clip {i+1}")
+                break
 
-            # Resize + crop + trim to clip_duration
+        if video_input:
+            # Use real clip: loop it to cover full duration, add audio
             vf = (
                 f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
-                f"crop={target_w}:{target_h},"
-                f"eq=brightness=-0.1:saturation=0.9"
+                f"crop={target_w}:{target_h}"
             )
-            ok = self.run_ffmpeg([
-                "-i", raw,
-                "-vf", vf,
-                "-t", str(clip_duration),
-                "-r", "30",
-                "-c:v", "libx264", "-preset", "fast",
-                "-an", proc
-            ])
-            if ok:
-                processed.append(proc)
-                log.info(f"Clip {i+1} ready")
-
-        # Fallback: black video if no clips
-        if not processed:
-            log.warning("No clips — using black video")
-            black = "/tmp/black.mp4"
             self.run_ffmpeg([
-                "-f", "lavfi", "-i", f"color=c=black:size={target_w}x{target_h}:rate=30",
-                "-t", str(duration), "-c:v", "libx264", black
+                "-stream_loop", "-1", "-i", video_input,
+                "-i", audio_path,
+                "-vf", vf,
+                "-t", str(duration),
+                "-r", "30",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-shortest",
+                output_path
             ])
-            processed = [black]
+        else:
+            # Fallback: black video with audio
+            log.warning("No valid clips — using black video")
+            self.run_ffmpeg([
+                "-f", "lavfi",
+                "-i", f"color=c=black:size={target_w}x{target_h}:rate=30",
+                "-i", audio_path,
+                "-t", str(duration),
+                "-c:v", "libx264", "-preset", "fast",
+                "-c:a", "aac", "-shortest",
+                output_path
+            ])
 
-        # Create concat list
-        concat_list = "/tmp/concat.txt"
-        with open(concat_list, "w") as f:
-            for p in processed:
-                f.write(f"file '{p}'\n")
-
-        # Concat all clips
-        concat_out = "/tmp/concat_out.mp4"
-        self.run_ffmpeg([
-            "-f", "concat", "-safe", "0",
-            "-i", concat_list,
-            "-c", "copy", concat_out
-        ])
-
-        # Trim to exact audio duration + add audio
-        self.run_ffmpeg([
-            "-i", concat_out,
-            "-i", audio_path,
-            "-t", str(duration),
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "aac", "-shortest",
-            output_path
-        ])
-
-        log.info(f"✅ Video built: {output_path}")
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            log.info(f"✅ Video built: {output_path}")
+        else:
+            log.error(f"❌ Video file missing or empty: {output_path}")
         return output_path
 
     # ─── Thumbnail ────────────────────────────────────────────────────────────
