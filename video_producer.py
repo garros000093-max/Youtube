@@ -217,9 +217,42 @@ class VideoProducer:
 
     # ─── Main ─────────────────────────────────────────────────────────────────
 
+    def _clean_pexels_query(self, text: str) -> str:
+        """Extract simple English keywords for Pexels — strip special chars, Korean, etc."""
+        import re
+        # Remove non-ASCII characters (Korean, Chinese, etc.)
+        text = re.sub(r'[^\x00-\x7F]+', ' ', text)
+        # Remove content inside brackets/parens
+        text = re.sub(r'\(.*?\)|\[.*?\]', '', text)
+        # Remove quotes, special chars
+        text = re.sub(r"[\"'`|#@!$%^&*+=<>{}\\]", '', text)
+        # Remove short words and single chars
+        words = [w for w in text.split() if len(w) > 3]
+        # Take first 3 meaningful words max
+        return ' '.join(words[:3]).strip() or "mystery suspense dark"
+
     def produce(self, script_data: dict, shorts: bool = False) -> tuple:
         topic = script_data["topic"]
-        queries = [topic["trend"], topic["category"], "dark mystery", "suspense"]
+
+        # Build clean, simple Pexels queries (2-3 English words max)
+        category = topic.get("category", "mystery")
+        raw_trend = topic.get("trend", "")
+        clean_trend = self._clean_pexels_query(raw_trend)
+
+        # Map category to visual search terms Pexels understands well
+        category_visual_map = {
+            "true crime story":         "crime investigation dark",
+            "scary reddit story":        "dark forest night scary",
+            "mysterious disappearance":  "missing person search",
+            "unsolved mystery":          "detective investigation clue",
+            "dark secret revealed":      "secret shadow mystery",
+            "survival story":            "wilderness survival nature",
+            "paranormal experience":     "haunted dark ghost",
+            "shocking true story":       "dramatic dark cinematic",
+        }
+        visual_query = category_visual_map.get(category, "mystery suspense dramatic")
+
+        queries = [visual_query, clean_trend if len(clean_trend) > 5 else "dark mystery", "cinematic dramatic"]
 
         urls = []
         for q in queries[:3]:
