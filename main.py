@@ -23,6 +23,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
 def run_pipeline():
     log.info("=" * 60)
     log.info("🚀 Starting YouTube Bot Pipeline")
@@ -48,6 +49,7 @@ def run_pipeline():
         log.info(f"✅ Video ready: {video_path}")
 
         # Step 4: Upload to YouTube
+        # Create a FRESH uploader instance per pipeline to avoid stale tokens
         log.info("📤 Step 4: Uploading to YouTube...")
         uploader = YouTubeUploader()
         video_id = uploader.upload(
@@ -76,6 +78,7 @@ def run_shorts_pipeline():
         producer = VideoProducer()
         video_path, thumbnail_path = producer.produce(script_data, shorts=True)
 
+        # Create a FRESH uploader instance per pipeline to avoid stale tokens
         uploader = YouTubeUploader()
         video_id = uploader.upload(
             video_path=video_path,
@@ -92,13 +95,15 @@ def run_shorts_pipeline():
 if __name__ == "__main__":
     log.info("🤖 YouTube Bot starting up...")
 
-    # Run immediately on start
+    # Run Shorts first, wait between pipelines to avoid token conflicts
     run_shorts_pipeline()
+    log.info("⏳ Waiting 30s between pipelines...")
+    time.sleep(30)
     run_pipeline()
 
     # Schedule: Shorts every day at 9 AM EST, long video every 2 days at 3 PM EST
-    schedule.every().day.at("14:00").do(run_shorts_pipeline)   # 9 AM EST = 14:00 UTC
-    schedule.every(2).days.at("20:00").do(run_pipeline)        # 3 PM EST = 20:00 UTC
+    schedule.every().day.at("14:00").do(run_shorts_pipeline)    # 9 AM EST = 14:00 UTC
+    schedule.every(2).days.at("20:00").do(run_pipeline)         # 3 PM EST = 20:00 UTC
 
     log.info("⏰ Scheduler running. Waiting for next job...")
     while True:

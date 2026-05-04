@@ -9,6 +9,8 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
+import time
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ SCOPES = [
 
 class YouTubeUploader:
     def __init__(self):
+        self.creds = None
         self.youtube = self._authenticate()
 
     def _authenticate(self):
@@ -35,7 +38,7 @@ class YouTubeUploader:
                 "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Railway variables."
             )
 
-        creds = Credentials(
+        self.creds = Credentials(
             token=None,
             refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
@@ -44,11 +47,33 @@ class YouTubeUploader:
             scopes=SCOPES
         )
 
-        # Auto-refresh the access token
-        creds.refresh(Request())
-        log.info("✅ YouTube authenticated via refresh token")
+        # Force refresh to get a valid access token
+        self._refresh_credentials()
 
-        return build("youtube", "v3", credentials=creds)
+        # cache_discovery=False prevents the file_cache warning and errors
+        return build("youtube", "v3", credentials=self.creds, cache_discovery=False)
+
+    def _refresh_credentials(self):
+        """Refresh credentials with retry logic"""
+        for attempt in range(3):
+            try:
+                self.creds.refresh(Request())
+                log.info("✅ YouTube authenticated via refresh token")
+                return
+            except Exception as e:
+                log.warning(f"Token refresh attempt {attempt + 1}/3 failed: {e}")
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        raise RuntimeError(
+            "Failed to refresh YouTube credentials after 3 attempts. "
+            "Your YOUTUBE_REFRESH_TOKEN may be expired — re-run auth_setup.py."
+        )
+
+    def _rebuild_client(self):
+        """Rebuild YouTube client with fresh credentials (called on 401)"""
+        log.info("Refreshing credentials due to a 401 response...")
+        self._refresh_credentials()
+        self.youtube = build("youtube", "v3", credentials=self.creds, cache_discovery=False)
 
     def upload(self, video_path: str, thumbnail_path: str,
                metadata: dict, shorts: bool = False) -> str:
@@ -58,9 +83,6 @@ class YouTubeUploader:
         if shorts and "#shorts" not in title.lower():
             title = title[:60] + " #shorts"
 
-        # Get channel ID for Brand Account if set
-        channel_id = os.getenv("YOUTUBE_CHANNEL_ID", "")
-
         snippet = {
             "title": title[:100],
             "description": self._build_description(metadata, shorts),
@@ -69,6 +91,9 @@ class YouTubeUploader:
             "defaultLanguage": "en",
             "defaultAudioLanguage": "en"
         }
+
+        # For Brand Account / specific channel
+        channel_id = os.getenv("YOUTUBE_CHANNEL_ID", "").strip()
 
         body = {
             "snippet": snippet,
@@ -87,19 +112,37 @@ class YouTubeUploader:
             mimetype="video/mp4"
         )
 
-        request = self.youtube.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media
-        )
+        # Retry upload once if we get a 401
+        for attempt in range(2):
+            try:
+                request = self.youtube.videos().insert(
+                    part="snippet,status",
+                    body=body,
+                    media_body=media
+                )
 
-        # Resumable upload with progress
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if status:
-                pct = int(status.progress() * 100)
-                log.info(f"Upload progress: {pct}%")
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        pct = int(status.progress() * 100)
+                        log.info(f"Upload progress: {pct}%")
+
+                break  # Success
+
+            except HttpError as e:
+                if e.resp.status == 401 and attempt == 0:
+                    log.warning("Got 401 during upload, refreshing token and retrying...")
+                    self._rebuild_client()
+                    # Re-create media upload (stream was partially consumed)
+                    media = MediaFileUpload(
+                        video_path,
+                        chunksize=50 * 1024 * 1024,
+                        resumable=True,
+                        mimetype="video/mp4"
+                    )
+                    continue
+                raise
 
         video_id = response["id"]
         log.info(f"✅ Video uploaded: {video_id}")
@@ -111,19 +154,20 @@ class YouTubeUploader:
                 media_body=MediaFileUpload(thumbnail_path)
             ).execute()
             log.info("✅ Thumbnail set")
-        except Exception as e:
+        except HttpError as e:
             log.warning(f"Thumbnail upload failed (needs verified account): {e}")
+        except Exception as e:
+            log.warning(f"Thumbnail upload failed: {e}")
 
         return video_id
 
     def _clean_tags(self, tags: list) -> list:
         """Remove invalid tags that YouTube rejects"""
-        banned = ["youtube", "youtuber", "subscribe", "viral", "trending",
-                  "youtube.video", "video", "shorts", "short"]
+        banned = {"youtube", "youtuber", "subscribe", "viral", "trending",
+                  "youtube.video", "video", "shorts", "short"}
         cleaned = []
         for tag in tags:
             tag = tag.strip()
-            # Max 30 chars per tag, no special chars, not banned
             if (tag and len(tag) <= 30 and
                 tag.lower() not in banned and
                 "<" not in tag and ">" not in tag):
@@ -131,7 +175,7 @@ class YouTubeUploader:
         return cleaned[:15]  # Max 15 safe tags
 
     def _build_description(self, metadata: dict, shorts: bool) -> str:
-        """Build SEO-optimized description with affiliate links"""
+        """Build SEO-optimized description"""
         base_desc = metadata.get("description", "")
 
         affiliate_section = """

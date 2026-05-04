@@ -23,6 +23,24 @@ THUMBNAIL_STYLES = [
     {"bg": (13, 27, 42),    "accent": (0, 212, 255),  "text": (255, 255, 255)},
 ]
 
+# Font search paths (in order of preference)
+FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+]
+
+
+def _find_font(size: int) -> ImageFont.FreeTypeFont:
+    for path in FONT_PATHS:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
 
 class VideoProducer:
     def __init__(self):
@@ -32,6 +50,9 @@ class VideoProducer:
     # ─── Pexels ──────────────────────────────────────────────────────────────
 
     def search_pexels(self, query: str, count: int = 4, portrait: bool = False) -> list:
+        if not PEXELS_API_KEY:
+            log.warning("PEXELS_API_KEY not set — skipping stock footage")
+            return []
         url = "https://api.pexels.com/videos/search"
         headers = {"Authorization": PEXELS_API_KEY}
         params = {
@@ -70,13 +91,14 @@ class VideoProducer:
     # ─── ffmpeg helpers ───────────────────────────────────────────────────────
 
     def run_ffmpeg(self, cmd: list) -> bool:
+        """Run ffmpeg with suppressed verbose output"""
         try:
             result = subprocess.run(
-                ["ffmpeg", "-y"] + cmd,
+                ["ffmpeg", "-y", "-loglevel", "error"] + cmd,
                 capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0:
-                log.warning(f"ffmpeg error: {result.stderr[-300:]}")
+                log.warning(f"ffmpeg error: {result.stderr[-500:]}")
             return result.returncode == 0
         except Exception as e:
             log.warning(f"ffmpeg failed: {e}")
@@ -96,12 +118,10 @@ class VideoProducer:
     def build_video(self, audio_path: str, video_urls: list,
                     output_path: str, shorts: bool = False) -> str:
         """Assemble video using ffmpeg directly"""
-        import os
         duration = self.get_audio_duration(audio_path)
         log.info(f"Audio duration: {duration:.1f}s")
         target_w, target_h = (1080, 1920) if shorts else (1920, 1080)
 
-        # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         # Try to download and use first working clip
@@ -110,7 +130,6 @@ class VideoProducer:
             raw = f"/tmp/raw_{i}.mp4"
             if not self.download_video(url, raw):
                 continue
-            # Test if file is valid
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-i", raw],
                 capture_output=True, timeout=15
@@ -121,7 +140,6 @@ class VideoProducer:
                 break
 
         if video_input:
-            # Use real clip: loop it to cover full duration, add audio
             vf = (
                 f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
                 f"crop={target_w}:{target_h}"
@@ -132,20 +150,22 @@ class VideoProducer:
                 "-vf", vf,
                 "-t", str(duration),
                 "-r", "30",
+                # Use libx264 with explicit pixel format to suppress encoder warnings
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-shortest",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-shortest",
                 output_path
             ])
         else:
-            # Fallback: black video with audio
             log.warning("No valid clips — using black video")
             self.run_ffmpeg([
                 "-f", "lavfi",
                 "-i", f"color=c=black:size={target_w}x{target_h}:rate=30",
                 "-i", audio_path,
                 "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast",
-                "-c:a", "aac", "-shortest",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-shortest",
                 output_path
             ])
 
@@ -168,13 +188,9 @@ class VideoProducer:
         # Top badge
         draw.rectangle([30, 30, 260, 80], fill=style["accent"])
 
-        try:
-            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            font_sm = ImageFont.truetype(font_path, 26)
-            font_lg = ImageFont.truetype(font_path, 68)
-            font_md = ImageFont.truetype(font_path, 34)
-        except Exception:
-            font_sm = font_lg = font_md = ImageFont.load_default()
+        font_sm = _find_font(26)
+        font_lg = _find_font(68)
+        font_md = _find_font(34)
 
         draw.text((50, 42), "● TRUE STORY", fill="white", font=font_sm)
 
@@ -182,7 +198,6 @@ class VideoProducer:
         lines = textwrap.wrap(title.upper(), width=22)[:3]
         y = 120
         for line in lines:
-            # Shadow
             draw.text((52, y + 3), line, fill=(0, 0, 0), font=font_lg)
             draw.text((50, y), line, fill=style["text"], font=font_lg)
             y += 82
