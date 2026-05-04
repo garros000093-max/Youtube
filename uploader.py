@@ -58,15 +58,20 @@ class YouTubeUploader:
         if shorts and "#shorts" not in title.lower():
             title = title[:60] + " #shorts"
 
+        # Get channel ID for Brand Account if set
+        channel_id = os.getenv("YOUTUBE_CHANNEL_ID", "")
+
+        snippet = {
+            "title": title[:100],
+            "description": self._build_description(metadata, shorts),
+            "tags": self._clean_tags(metadata.get("tags", [])),
+            "categoryId": metadata.get("category", "22"),
+            "defaultLanguage": "en",
+            "defaultAudioLanguage": "en"
+        }
+
         body = {
-            "snippet": {
-                "title": title[:100],
-                "description": self._build_description(metadata, shorts),
-                "tags": self._clean_tags(metadata.get("tags", [])),
-                "categoryId": metadata.get("category", "22"),
-                "defaultLanguage": "en",
-                "defaultAudioLanguage": "en"
-            },
+            "snippet": snippet,
             "status": {
                 "privacyStatus": "public",
                 "selfDeclaredMadeForKids": False,
