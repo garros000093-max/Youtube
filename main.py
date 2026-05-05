@@ -23,25 +23,20 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─── Keep-alive HTTP server (prevents Railway from sleeping) ─────────────────
-
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"YouTube Bot is running OK")
-
     def log_message(self, format, *args):
-        pass  # Suppress HTTP logs
+        pass
 
 def start_health_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    log.info(f"🌐 Health server started on port {port}")
+    log.info(f"🌐 Health server on port {port}")
     server.serve_forever()
-
-# ─── Pipelines ───────────────────────────────────────────────────────────────
 
 def run_pipeline():
     log.info("=" * 60)
@@ -54,11 +49,9 @@ def run_pipeline():
 
         generator = ScriptGenerator()
         script_data = generator.generate(topic)
-        log.info(f"✅ Script ready ({len(script_data['script'])} chars)")
 
         producer = VideoProducer()
         video_path, thumbnail_path = producer.produce(script_data)
-        log.info(f"✅ Video ready: {video_path}")
 
         uploader = YouTubeUploader()
         video_id = uploader.upload(
@@ -97,21 +90,24 @@ def run_shorts_pipeline():
         log.error(f"❌ Shorts pipeline failed: {e}", exc_info=True)
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    log.info("🤖 YouTube Bot starting up — scheduler only mode")
-    log.info("📅 Shorts: daily at 15:00 Fez | Long video: every 2 days at 21:00 Fez")
+    log.info("🤖 YouTube Bot starting up...")
 
-    # Start health server in background thread to keep Railway awake
-    thread = threading.Thread(target=start_health_server, daemon=True)
-    thread.start()
+    # Start health server to keep Railway awake
+    threading.Thread(target=start_health_server, daemon=True).start()
 
-    # Fez = UTC+1
+    # Run immediately on startup
+    log.info("▶️  Running pipelines now...")
+    run_shorts_pipeline()
+    log.info("⏳ Waiting 60s before long video...")
+    time.sleep(60)
+    run_pipeline()
+
+    # Then schedule for daily runs
     schedule.every().day.at("14:00").do(run_shorts_pipeline)   # 15:00 Fez
     schedule.every(2).days.at("20:00").do(run_pipeline)        # 21:00 Fez
 
-    log.info("⏰ Waiting for scheduled jobs...")
+    log.info("⏰ Scheduler running...")
     while True:
         schedule.run_pending()
         time.sleep(60)
