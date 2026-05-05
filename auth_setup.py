@@ -1,6 +1,6 @@
 """
-auth_setup.py - Run this ONCE to get your YouTube refresh token
-Deploy on Railway → open the URL → authorize → copy the token → add to Railway variables
+auth_setup.py - Run ONCE to get YouTube refresh token
+Deploy on Railway → open URL → authorize → copy token → add to Railway variables
 """
 
 import os
@@ -8,10 +8,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from google_auth_oauthlib.flow import Flow
 
-# ONLY youtube.upload — do NOT add other scopes
-# Adding youtube / force-ssl / youtubepartner causes youtubeSignupRequired
-# unless Google has manually approved your app
+# Must match EXACTLY what uploader.py uses
 SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.upload",
 ]
 
@@ -56,15 +55,17 @@ class AuthHandler(BaseHTTPRequestHandler):
 <head>
   <title>YouTube Bot Auth</title>
   <style>
-    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 100px auto; text-align: center; background: #0f0f0f; color: white; }}
-    a.btn {{ background: #FF0000; color: white; padding: 15px 30px; text-decoration: none;
-             border-radius: 8px; font-size: 18px; display: inline-block; margin-top: 20px; }}
+    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 100px auto;
+            text-align: center; background: #0f0f0f; color: white; }}
+    a.btn {{ background: #FF0000; color: white; padding: 15px 30px;
+             text-decoration: none; border-radius: 8px; font-size: 18px;
+             display: inline-block; margin-top: 20px; }}
     p {{ color: #aaa; }}
   </style>
 </head>
 <body>
   <h1>🤖 YouTube Bot Setup</h1>
-  <p>Sign in with the Google account that owns your YouTube channel</p>
+  <p>⚠️ Sign in with the <strong>Brand Account</strong> (your channel), not the personal Gmail</p>
   <a class="btn" href="{auth_url}">🔗 Connect YouTube Channel</a>
 </body>
 </html>"""
@@ -79,7 +80,7 @@ class AuthHandler(BaseHTTPRequestHandler):
                 self._send(400, f"<h1>❌ Error: {error}</h1>")
                 return
             if not code or not flow:
-                self._send(400, "<h1>❌ Missing code. Go back to /</h1>")
+                self._send(400, "<h1>❌ Missing code</h1>")
                 return
 
             try:
@@ -90,32 +91,29 @@ class AuthHandler(BaseHTTPRequestHandler):
                 html = f"""<!DOCTYPE html>
 <html>
 <head>
-  <title>Success!</title>
+  <title>Done!</title>
   <style>
-    body {{ font-family: Arial, sans-serif; max-width: 700px; margin: 60px auto; background: #0f0f0f; color: white; }}
-    .token-box {{ background: #1a1a1a; color: #00ff00; padding: 20px; border-radius: 8px;
-                  word-break: break-all; font-family: monospace; font-size: 13px; margin: 15px 0; }}
+    body {{ font-family: Arial, sans-serif; max-width: 700px; margin: 60px auto;
+            background: #0f0f0f; color: white; }}
+    .token {{ background: #1a1a1a; color: #00ff00; padding: 20px; border-radius: 8px;
+              word-break: break-all; font-family: monospace; font-size: 13px; margin: 15px 0; }}
     .step {{ background: #1a1a2e; padding: 15px; border-radius: 8px; margin: 15px 0;
              border-left: 4px solid #FF0000; }}
   </style>
 </head>
 <body>
   <h1>✅ Done!</h1>
-
   <div class="step"><strong>Step 1 — Copy this token:</strong></div>
-  <div class="token-box">{refresh_token}</div>
-
+  <div class="token">{refresh_token}</div>
   <div class="step">
-    <strong>Step 2 — Go to Railway → Variables → update:</strong><br><br>
-    <code>YOUTUBE_REFRESH_TOKEN = {refresh_token[:25]}...</code>
+    <strong>Step 2 — Update Railway variable:</strong><br><br>
+    YOUTUBE_REFRESH_TOKEN = {refresh_token[:30]}...
   </div>
-
   <div class="step">
-    <strong>Step 3 — Change Dockerfile CMD back to:</strong><br><br>
-    <code>CMD ["python", "main.py"]</code>
+    <strong>Step 3 — Change Start Command back to:</strong><br><br>
+    python main.py
   </div>
-
-  <p>🎉 Your YouTube channel is now connected!</p>
+  <p>🎉 Done! Redeploy and the bot will start uploading.</p>
 </body>
 </html>"""
                 self._send(200, html)
@@ -137,8 +135,6 @@ if __name__ == "__main__":
         print("❌ Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET")
         exit(1)
 
-    print(f"🚀 Auth server starting on port {PORT}")
+    print(f"🚀 Auth server on port {PORT}")
     print(f"🌐 Open: https://{RAILWAY_DOMAIN}/")
-
-    server = HTTPServer(("0.0.0.0", PORT), AuthHandler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", PORT), AuthHandler).serve_forever()

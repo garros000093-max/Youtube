@@ -14,10 +14,9 @@ import time
 
 log = logging.getLogger(__name__)
 
-# IMPORTANT: Only youtube.upload scope
-# Adding youtube / youtube.force-ssl / youtubepartner causes youtubeSignupRequired
-# unless Google has manually verified your app
+# Both scopes needed for Brand Account uploads
 SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.upload",
 ]
 
@@ -28,14 +27,14 @@ class YouTubeUploader:
         self.youtube = self._authenticate()
 
     def _authenticate(self):
-        refresh_token  = os.getenv("YOUTUBE_REFRESH_TOKEN")
-        client_id      = os.getenv("GOOGLE_CLIENT_ID")
-        client_secret  = os.getenv("GOOGLE_CLIENT_SECRET")
+        refresh_token = os.getenv("YOUTUBE_REFRESH_TOKEN")
+        client_id     = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
 
         if not all([refresh_token, client_id, client_secret]):
             raise ValueError(
-                "Missing YouTube credentials. Set YOUTUBE_REFRESH_TOKEN, "
-                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET in Railway variables."
+                "Missing credentials: YOUTUBE_REFRESH_TOKEN, "
+                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET"
             )
 
         self.creds = Credentials(
@@ -60,10 +59,7 @@ class YouTubeUploader:
                 log.warning(f"Token refresh attempt {attempt + 1}/3 failed: {e}")
                 if attempt < 2:
                     time.sleep(2 ** attempt)
-        raise RuntimeError(
-            "Failed to refresh YouTube token after 3 attempts. "
-            "Re-run auth_setup.py to get a new refresh token."
-        )
+        raise RuntimeError("Failed to refresh YouTube token after 3 attempts.")
 
     def _rebuild_client(self):
         self._refresh_credentials()
@@ -116,7 +112,7 @@ class YouTubeUploader:
 
             except HttpError as e:
                 if e.resp.status == 401 and attempt == 0:
-                    log.warning("Got 401 during upload, refreshing token and retrying...")
+                    log.warning("Got 401, refreshing token and retrying...")
                     self._rebuild_client()
                     continue
                 raise
