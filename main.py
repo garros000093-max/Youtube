@@ -1,6 +1,6 @@
 """
 YouTube Automation Bot - Telegram Delivery Mode
-Produces videos and sends everything needed for manual YouTube upload
+Runs ONCE on startup, then waits for scheduled times only
 """
 
 import os
@@ -25,6 +25,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8470062315:AAE1oSfBhIITjsJCZ6V2BSQo
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "2064937908")
 API       = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# Flag to prevent concurrent pipeline runs
+pipeline_running = False
+
 
 def tg_message(text: str):
     try:
@@ -36,19 +39,19 @@ def tg_message(text: str):
 
 
 def tg_file(path: str, kind: str, caption: str = ""):
-    """Send video or photo to Telegram"""
     try:
         with open(path, "rb") as f:
             endpoint = "sendVideo" if kind == "video" else "sendPhoto"
             field    = "video"    if kind == "video" else "photo"
             r = requests.post(f"{API}/{endpoint}",
-                data={"chat_id": CHAT_ID, "caption": caption[:1024], "supports_streaming": True},
+                data={"chat_id": CHAT_ID, "caption": caption[:1024],
+                      "supports_streaming": True},
                 files={field: f},
                 timeout=600)
         if r.status_code == 200:
             log.info(f"✅ Sent {kind} to Telegram")
             return True
-        # Fallback: send as document
+        # Fallback: document
         with open(path, "rb") as f:
             requests.post(f"{API}/sendDocument",
                 data={"chat_id": CHAT_ID, "caption": caption[:1024]},
@@ -56,11 +59,18 @@ def tg_file(path: str, kind: str, caption: str = ""):
                 timeout=600)
         return True
     except Exception as e:
-        log.warning(f"Telegram file send failed: {e}")
+        log.warning(f"Telegram file failed: {e}")
         return False
 
 
 def run_pipeline(shorts: bool = False):
+    global pipeline_running
+
+    if pipeline_running:
+        log.warning("Pipeline already running — skipping")
+        return
+
+    pipeline_running = True
     kind = "📱 SHORTS" if shorts else "🎬 LONG VIDEO"
     log.info(f"Starting {kind} Pipeline...")
     tg_message(f"⏳ {kind} pipeline starting...")
@@ -80,45 +90,43 @@ def run_pipeline(shorts: bool = False):
         tags        = data.get("tags", [])
         tags_str    = ", ".join(tags[:20])
 
-        # Build full YouTube Studio copy-paste message
         yt_info = f"""━━━━━━━━━━━━━━━━━━━━━━━━━
 {kind} — READY TO UPLOAD
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📌 <b>TITLE</b> (copy this):
+📌 <b>TITLE:</b>
 <code>{title[:100]}</code>
 
-📝 <b>DESCRIPTION</b> (copy this):
+📝 <b>DESCRIPTION:</b>
 <code>{description[:800]}</code>
 
-🏷️ <b>TAGS</b> (copy this):
+🏷️ <b>TAGS:</b>
 <code>{tags_str}</code>
 
-📂 Category: People & Blogs (22)
+📂 Category: People & Blogs
 🌍 Language: English
 👶 Made for kids: NO
-{'🔖 Add #shorts to title and description' if shorts else ''}
+{'🔖 Add #shorts to title' if shorts else ''}
 
-⬆️ Upload at: https://studio.youtube.com
+⬆️ https://studio.youtube.com
 ━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
-        # Send metadata first
         tg_message(yt_info)
 
-        # Send thumbnail
         if os.path.exists(thumb_path):
-            tg_file(thumb_path, "photo", caption=f"🖼️ Thumbnail — {title[:80]}")
+            tg_file(thumb_path, "photo", caption=f"🖼️ {title[:80]}")
 
-        # Send video
-        tg_message("📤 Sending video file... (may take a few minutes)")
+        tg_message("📤 Sending video... (may take a few minutes)")
         tg_file(video_path, "video", caption=f"{'📱' if shorts else '🎬'} {title[:200]}")
 
         log.info(f"✅ {kind} complete!")
-        tg_message(f"✅ {kind} done! Check above for title, description and tags.")
+        tg_message(f"✅ {kind} done!")
 
     except Exception as e:
         log.error(f"❌ Pipeline failed: {e}", exc_info=True)
         tg_message(f"❌ Pipeline failed: {str(e)[:300]}")
+    finally:
+        pipeline_running = False
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -132,23 +140,32 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     log.info("🤖 Bot starting — Telegram delivery mode")
+
+    # Health server
     threading.Thread(
-        target=lambda: HTTPServer(("0.0.0.0", int(os.getenv("PORT", 8080))), HealthHandler).serve_forever(),
+        target=lambda: HTTPServer(
+            ("0.0.0.0", int(os.getenv("PORT", 8080))), HealthHandler
+        ).serve_forever(),
         daemon=True
     ).start()
 
-    tg_message("🚀 Bot started! Videos will be sent here for manual upload to YouTube.")
+    tg_message("🚀 Bot started!\n📅 Shorts: daily 15:00 Fez\n🎬 Long video: every 2 days 21:00 Fez")
 
-    # Run immediately
-    run_pipeline(shorts=True)
-    time.sleep(60)
-    run_pipeline(shorts=False)
+    # Run ONCE on startup in background thread
+    threading.Thread(target=lambda: run_pipeline(shorts=True), daemon=True).start()
+    time.sleep(120)  # Wait 2 min before long video
+    threading.Thread(target=lambda: run_pipeline(shorts=False), daemon=True).start()
 
-    # Schedule (Fez UTC+1)
-    schedule.every().day.at("14:00").do(run_pipeline, shorts=True)    # 15:00 Fez
-    schedule.every(2).days.at("20:00").do(run_pipeline, shorts=False)  # 21:00 Fez
+    # Schedule (UTC = Fez - 1h)
+    schedule.every().day.at("14:00").do(
+        lambda: threading.Thread(target=lambda: run_pipeline(shorts=True), daemon=True).start()
+    )
+    schedule.every(2).days.at("20:00").do(
+        lambda: threading.Thread(target=lambda: run_pipeline(shorts=False), daemon=True).start()
+    )
 
-    log.info("⏰ Scheduler running...")
+    log.info("⏰ Scheduler running... Next: 15:00 Fez (shorts) | 21:00 Fez (long)")
+
     while True:
         schedule.run_pending()
         time.sleep(60)
