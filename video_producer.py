@@ -93,7 +93,7 @@ class VideoProducer:
         return None
 
     def mix_audio(self, voice_path: str, music_path: str,
-                  output_path: str, music_volume: float = 0.08) -> str:
+                  output_path: str, music_volume: float = 0.05) -> str:
         """Mix voiceover with background music
         music_volume: 0.08 = 8% volume (very subtle, voice stays clear)
         """
