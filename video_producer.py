@@ -16,20 +16,13 @@ import numpy as np
 log = logging.getLogger(__name__)
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
-# Free background music URLs (dark/mystery atmosphere, CC0 license)
-BACKGROUND_MUSIC = [
-    "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-    "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-    "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-]
-
-# Better: Use freepd.com dark/ambient tracks
+# Free background music — CC0 license, reliable CDN sources
 DARK_MUSIC_URLS = [
-    "https://freepd.com/music/Sincerely/Sincerely.mp3",
-    "https://freepd.com/music/Dark%20Fog/Dark%20Fog.mp3",
-    "https://freepd.com/music/Cylinder%20Five/Cylinder%20Five.mp3",
-    "https://freepd.com/music/Cipher/Cipher.mp3",
-    "https://freepd.com/music/Airship%20Serenity/Airship%20Serenity.mp3",
+    "https://cdn.pixabay.com/audio/2022/10/16/audio_3a09af3263.mp3",  # Dark ambient
+    "https://cdn.pixabay.com/audio/2022/08/04/audio_2dde668d05.mp3",  # Mystery
+    "https://cdn.pixabay.com/audio/2023/01/30/audio_8719e46c24.mp3",  # Suspense
+    "https://cdn.pixabay.com/audio/2022/11/22/audio_fbc609a7c8.mp3",  # Thriller
+    "https://cdn.pixabay.com/audio/2022/03/15/audio_7e6e36905e.mp3",  # Dark cinematic
 ]
 
 THUMBNAIL_STYLES = [

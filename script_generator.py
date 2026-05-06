@@ -93,7 +93,7 @@ Return ONLY valid JSON:
 
     def text_to_speech(self, text: str, output_path: str, shorts: bool = False) -> str:
         """OpenAI TTS - cheap and reliable"""
-        voice = "nova" if shorts else "onyx"
+        voice = "nova"  # Female voice for all videos
         log.info(f"Generating voice with OpenAI TTS ({voice})...")
 
         chunks = []
