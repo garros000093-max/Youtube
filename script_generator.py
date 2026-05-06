@@ -129,23 +129,7 @@ Return ONLY valid JSON, no markdown:
         if not ELEVENLABS_API_KEY:
             raise ValueError("ELEVENLABS_API_KEY not set in Railway variables")
 
-        # Get available voices dynamically if defaults fail
         voice_id = ELEVENLABS_VOICES["shorts" if shorts else "main"]
-        # Verify voice exists, fallback to first available voice
-        try:
-            voices_r = requests.get(
-                "https://api.elevenlabs.io/v1/voices",
-                headers={"xi-api-key": ELEVENLABS_API_KEY},
-                timeout=10
-            )
-            if voices_r.status_code == 200:
-                available = voices_r.json().get("voices", [])
-                ids = [v["voice_id"] for v in available]
-                if voice_id not in ids and ids:
-                    voice_id = ids[0]
-                    log.info(f"Using available voice: {available[0].get('name', voice_id)}")
-        except Exception:
-            pass
 
         # ElevenLabs max ~5000 chars per request — split if needed
         max_len = 4500
