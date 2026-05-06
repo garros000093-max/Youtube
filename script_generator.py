@@ -21,8 +21,8 @@ GROQ_API_URL      = "https://api.groq.com/openai/v1/chat/completions"
 # Antoni: deep dramatic male
 # Adam: clear male narrator
 ELEVENLABS_VOICES = {
-    "shorts": "21m00Tcm4TlvDq8ikWAM",  # Rachel
-    "main":   "ErXwobaYiN019PkySvjV",  # Antoni — deep dramatic male
+    "shorts": "EXAVITQu4vr4xnSDxMaL",  # Sarah - mature female
+    "main":   "IKne3meqSaSn9XLyUdCD",  # Charlie - deep male — deep dramatic male
 }
 
 
