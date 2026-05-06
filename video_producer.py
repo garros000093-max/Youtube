@@ -1,5 +1,5 @@
 """
-Video Producer - Fixed AAC encoder issue
+Video Producer - Uses static images with Ken Burns effect (no Pexels video issues)
 """
 
 import os
@@ -10,7 +10,7 @@ import random
 import re
 import textwrap
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -46,25 +46,11 @@ def get_duration(path):
     except:
         return 60.0
 
-def ffmpeg_test_audio():
-    """Test which audio encoder works on this system"""
-    for enc in ["aac", "libfdk_aac", "ac3", "mp2"]:
-        r = subprocess.run(
-            ["ffmpeg", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-             "-t", "1", "-c:a", enc, "-f", "null", "-"],
-            capture_output=True, timeout=10
-        )
-        if r.returncode == 0:
-            log.info(f"Audio encoder: {enc}")
-            return enc
-    return "aac"
-
 
 class VideoProducer:
     def __init__(self):
         self.output_dir = Path("/tmp/video_output")
         self.output_dir.mkdir(exist_ok=True)
-        self.audio_enc = ffmpeg_test_audio()
 
     def _clean_query(self, text):
         text = re.sub(r'[^\x00-\x7F]+', ' ', text)
@@ -72,115 +58,166 @@ class VideoProducer:
         words = [w for w in text.split() if len(w) > 3]
         return ' '.join(words[:3]).strip() or "nature landscape"
 
-    def search_pexels(self, query, count=5, portrait=False):
+    def search_pexels_images(self, query, count=8, portrait=False):
+        """Search Pexels PHOTOS (not videos) — much more reliable"""
         if not PEXELS_API_KEY:
             return []
         try:
             r = requests.get(
-                "https://api.pexels.com/videos/search",
+                "https://api.pexels.com/v1/search",
                 headers={"Authorization": PEXELS_API_KEY},
-                params={"query": query, "per_page": count,
-                        "orientation": "portrait" if portrait else "landscape"},
+                params={
+                    "query": query,
+                    "per_page": count,
+                    "orientation": "portrait" if portrait else "landscape"
+                },
                 timeout=15
             )
             r.raise_for_status()
+            photos = r.json().get("photos", [])
             links = []
-            for v in r.json().get("videos", []):
-                files = sorted(v.get("video_files", []),
-                               key=lambda f: f.get("width", 0))
-                # Pick lowest resolution that's still usable (faster + more compatible)
-                for f in files:
-                    if f.get("width", 0) >= 640:
-                        links.append(f["link"])
-                        break
-            return links[:count]
+            for p in photos:
+                src = p.get("src", {})
+                # Use large2x for high quality
+                url = src.get("large2x") or src.get("large") or src.get("medium")
+                if url:
+                    links.append(url)
+            log.info(f"Pexels images for '{query}': {len(links)} found")
+            return links
         except Exception as e:
-            log.warning(f"Pexels: {e}")
+            log.warning(f"Pexels images failed: {e}")
             return []
 
-    def download(self, url, path):
+    def download_image(self, url, path):
         try:
-            r = requests.get(url, stream=True, timeout=60)
+            r = requests.get(url, stream=True, timeout=30)
             r.raise_for_status()
             with open(path, "wb") as f:
                 for chunk in r.iter_content(32768):
                     f.write(chunk)
-            return os.path.getsize(path) > 5000
+            return os.path.getsize(path) > 1000
         except Exception as e:
-            log.warning(f"Download: {e}")
+            log.warning(f"Image download failed: {e}")
             return False
 
-    def build_video(self, audio_path, video_urls, output_path, shorts=False):
+    def prepare_image(self, img_path, out_path, W, H):
+        """Resize and crop image to exact target dimensions"""
+        try:
+            img = Image.open(img_path).convert("RGB")
+            # Scale to fill
+            ratio = max(W / img.width, H / img.height)
+            new_w = int(img.width * ratio) + 2
+            new_h = int(img.height * ratio) + 2
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            # Center crop
+            x = (new_w - W) // 2
+            y = (new_h - H) // 2
+            img = img.crop((x, y, x + W, y + H))
+            img.save(out_path, "JPEG", quality=95)
+            return True
+        except Exception as e:
+            log.warning(f"Image prepare failed: {e}")
+            return False
+
+    def build_video(self, audio_path, image_urls, output_path, shorts=False):
         duration = get_duration(audio_path)
-        log.info(f"Audio: {duration:.1f}s | Audio encoder: {self.audio_enc}")
+        log.info(f"Audio: {duration:.1f}s")
 
         W, H = (1080, 1920) if shorts else (1920, 1080)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        # Convert audio to WAV first (most compatible)
-        wav_path = "/tmp/voiceover.wav"
-        subprocess.run([
-            "ffmpeg", "-y", "-i", audio_path,
-            "-ar", "44100", "-ac", "1", wav_path
-        ], capture_output=True, timeout=60)
+        # Download and prepare images
+        prepared = []
+        for i, url in enumerate(image_urls[:12]):
+            raw = f"/tmp/img_{i}.jpg"
+            prep = f"/tmp/prep_{i}.jpg"
+            if self.download_image(url, raw) and self.prepare_image(raw, prep, W, H):
+                prepared.append(prep)
 
-        audio_input = wav_path if os.path.exists(wav_path) else audio_path
+        log.info(f"Prepared {len(prepared)} images")
 
-        for i, url in enumerate(video_urls[:8]):
-            raw = f"/tmp/clip_{i}.mp4"
-            if not self.download(url, raw):
-                continue
-
-            log.info(f"Trying clip {i+1}...")
-            cmd = [
-                "ffmpeg", "-y",
-                "-stream_loop", "-1", "-i", raw,
-                "-i", audio_input,
-                "-t", str(duration),
-                "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                       f"crop={W}:{H},setsar=1,format=yuv420p",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-c:a", self.audio_enc,
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                output_path
+        if not prepared:
+            # Generate colored gradient images
+            log.warning("No images — generating gradient backgrounds")
+            colors = [
+                (26, 10, 46), (10, 26, 46), (46, 10, 10),
+                (10, 46, 26), (30, 20, 50), (50, 20, 30)
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            for i, color in enumerate(colors):
+                prep = f"/tmp/prep_{i}.jpg"
+                img = Image.new("RGB", (W, H), color)
+                draw = ImageDraw.Draw(img)
+                # Add subtle gradient effect
+                for y in range(0, H, 4):
+                    alpha = int(30 * (1 - y/H))
+                    draw.rectangle([0, y, W, y+4],
+                        fill=tuple(min(255, c + alpha) for c in color))
+                img.save(prep, "JPEG", quality=90)
+                prepared.append(prep)
 
-            if r.returncode == 0 and os.path.exists(output_path) \
-               and os.path.getsize(output_path) > 50000:
-                mb = os.path.getsize(output_path) / 1024 / 1024
-                log.info(f"✅ Video built ({mb:.1f} MB)")
-                return output_path
-            else:
-                log.warning(f"Clip {i+1} failed")
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+        # Each image shown for equal duration
+        img_duration = duration / len(prepared)
 
-        # Fallback: color background
-        log.warning("All clips failed — color background")
+        # Create concat input file
+        concat_file = "/tmp/images.txt"
+        with open(concat_file, "w") as f:
+            for prep in prepared:
+                f.write(f"file '{prep}'\n")
+                f.write(f"duration {img_duration:.2f}\n")
+            # Repeat last image
+            f.write(f"file '{prepared[-1]}'\n")
+
+        # Build video with Ken Burns zoom effect
+        log.info("Building video with slideshow...")
         cmd = [
             "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", f"color=c=0x1a1a2e:size={W}x{H}:rate=30:duration={duration}",
-            "-i", audio_input,
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-i", audio_path,
             "-t", str(duration),
+            # Zoom effect
+            "-vf", (
+                f"scale={W*2}:{H*2},"
+                f"zoompan=z='min(zoom+0.0008,1.3)':d={int(img_duration*25)}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"s={W}x{H}:fps=25,"
+                f"format=yuv420p"
+            ),
             "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-vf", "format=yuv420p",
-            "-c:a", self.audio_enc, "-b:a", "128k",
+            "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
             "-map", "0:v:0", "-map", "1:a:0",
             output_path
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if r.returncode == 0:
-            log.info("✅ Color bg video built")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+
+        if r.returncode == 0 and os.path.exists(output_path) \
+           and os.path.getsize(output_path) > 50000:
+            mb = os.path.getsize(output_path) / 1024 / 1024
+            log.info(f"✅ Video built ({mb:.1f} MB)")
+            return output_path
+
+        # Simpler fallback without zoom effect
+        log.warning(f"Ken Burns failed — trying simple slideshow")
+        cmd2 = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-i", audio_path,
+            "-t", str(duration),
+            "-vf", f"scale={W}:{H},format=yuv420p",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-map", "0:v:0", "-map", "1:a:0",
+            output_path
+        ]
+        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=600)
+
+        if r2.returncode == 0 and os.path.exists(output_path) \
+           and os.path.getsize(output_path) > 50000:
+            mb = os.path.getsize(output_path) / 1024 / 1024
+            log.info(f"✅ Simple slideshow built ({mb:.1f} MB)")
         else:
-            log.error(f"❌ All failed: {r.stderr[-300:]}")
+            log.error(f"❌ All video methods failed: {r2.stderr[-300:]}")
 
         return output_path
 
@@ -199,7 +236,8 @@ class VideoProducer:
             draw.text((100, y), line, fill=style["text"], font=f)
             y += 164
         draw.rectangle([0, H-140, W, H], fill=style["accent"])
-        draw.text((100, H-110), "WATCH TILL THE END  👇", fill="white", font=_find_font(68))
+        draw.text((100, H-110), "WATCH TILL THE END  👇",
+                  fill="white", font=_find_font(68))
         try:
             arr = np.array(img).astype(np.float32)
             arr = np.clip(arr + np.random.normal(0, 4, arr.shape), 0, 255).astype(np.uint8)
@@ -216,21 +254,21 @@ class VideoProducer:
         trend    = self._clean_query(topic.get("trend", ""))
 
         cat_map = {
-            "true crime story":         "crime investigation",
+            "true crime story":         "crime investigation dark",
             "scary reddit story":       "dark forest night",
-            "mysterious disappearance": "missing person",
+            "mysterious disappearance": "missing person forest",
             "unsolved mystery":         "detective mystery",
-            "dark secret revealed":     "shadow secret",
-            "survival story":           "wilderness survival",
-            "paranormal experience":    "haunted ghost",
+            "dark secret revealed":     "shadow secret dark",
+            "survival story":           "wilderness nature",
+            "paranormal experience":    "haunted dark",
             "shocking true story":      "dramatic cinematic",
         }
-        visual = cat_map.get(category, "nature landscape")
+        visual = cat_map.get(category, "mystery dramatic dark")
 
         urls = []
-        for q in [visual, trend, "landscape aerial", "nature timelapse"]:
-            urls += self.search_pexels(q, count=4, portrait=shorts)
-            if len(urls) >= 8: break
+        for q in [visual, trend, "cinematic landscape", "dramatic sky"]:
+            urls += self.search_pexels_images(q, count=4, portrait=shorts)
+            if len(urls) >= 10: break
 
         sfx = "shorts" if shorts else "main"
         vp  = str(self.output_dir / f"video_{sfx}.mp4")
