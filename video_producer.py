@@ -266,97 +266,60 @@ class VideoProducer:
         return output_path
 
 
+
     def generate_subtitles(self, audio_path: str, script: str) -> str:
-        """Generate SRT subtitles from script text timed to audio"""
-        import math
+        """Generate accurate subtitles using OpenAI Whisper"""
+        import os
+        from openai import OpenAI
+
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        try:
+            log.info("Transcribing with Whisper for accurate subtitles...")
+            with open(audio_path, "rb") as f:
+                transcript = openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    response_format="srt"
+                )
+
+            srt_path = "/tmp/subtitles.srt"
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(transcript)
+
+            log.info("✅ Whisper subtitles generated")
+            return srt_path
+
+        except Exception as e:
+            log.warning(f"Whisper failed: {e} — using fallback")
+            return self._subtitle_fallback(audio_path, script)
+
+    def _subtitle_fallback(self, audio_path: str, script: str) -> str:
+        """Fallback subtitle timing based on word count"""
         duration = get_duration(audio_path)
         words = script.split()
         total_words = len(words)
-        
         if total_words == 0:
             return ""
-        
-        # Average words per second based on audio duration
-        wps = total_words / duration
-        
-        srt_lines = []
-        idx = 1
-        chunk_size = 10  # words per subtitle line
-        
-        for i in range(0, total_words, chunk_size):
-            chunk = words[i:i + chunk_size]
-            text = " ".join(chunk)
-            
-            start_sec = (i / total_words) * duration
-            end_sec = min(((i + chunk_size) / total_words) * duration, duration)
-            
-            def fmt_time(s):
-                h = int(s // 3600)
-                m = int((s % 3600) // 60)
-                sec = int(s % 60)
-                ms = int((s % 1) * 1000)
-                return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
-            
-            srt_lines.append(f"{idx}")
-            srt_lines.append(f"{fmt_time(start_sec)} --> {fmt_time(end_sec)}")
-            srt_lines.append(text)
-            srt_lines.append("")
+
+        def fmt(s):
+            h,m = int(s//3600), int((s%3600)//60)
+            sec, ms = int(s%60), int((s%1)*1000)
+            return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
+
+        lines, idx, chunk = [], 1, 8
+        for i in range(0, total_words, chunk):
+            t = " ".join(words[i:i+chunk])
+            s = (i/total_words)*duration
+            e = min(((i+chunk)/total_words)*duration, duration)
+            lines += [str(idx), f"{fmt(s)} --> {fmt(e)}", t, ""]
             idx += 1
-        
+
         srt_path = "/tmp/subtitles.srt"
         with open(srt_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(srt_lines))
-        
-        log.info(f"✅ Subtitles generated: {idx-1} lines")
+            f.write("\n".join(lines))
         return srt_path
 
-    def burn_subtitles(self, video_path: str, srt_path: str, 
-                       output_path: str, shorts: bool = False) -> str:
-        """Burn subtitles into video with styled captions"""
-        font_size = 22 if shorts else 18
-        
-        # Style: small white text at bottom, black outline, 10 words per line
-        subtitle_filter = (
-            f"subtitles={srt_path}:force_style='"
-            f"FontSize={font_size},"
-            f"FontName=DejaVu Sans,"
-            f"PrimaryColour=&H00FFFFFF,"
-            f"OutlineColour=&H00000000,"
-            f"BackColour=&H60000000,"
-            f"Outline=1,"
-            f"Shadow=0,"
-            f"Alignment=2,"
-            f"MarginV=40,"
-            f"MarginL=30,"
-            f"MarginR=30'"
-        )
-        
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-vf", subtitle_filter,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            output_path
-        ]
-        
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        
-        if r.returncode == 0 and os.path.exists(output_path) \
-           and os.path.getsize(output_path) > 50000:
-            log.info("✅ Subtitles burned into video")
-            return output_path
-        else:
-            log.warning(f"Subtitle burn failed — returning original: {r.stderr[-200:]}")
-            return video_path
-
-    def create_thumbnail(self, title, output_path):
-        style = random.choice(THUMBNAIL_STYLES)
-        W, H = 2560, 1440
-        img = Image.new("RGB", (W, H), color=style["bg"])
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([0, 0, 16, H], fill=style["accent"])
         draw.rectangle([60, 60, 520, 160], fill=style["accent"])
         draw.text((100, 84), "● TRUE STORY", fill="white", font=_find_font(52))
         lines = textwrap.wrap(title.upper(), width=25)[:3]
