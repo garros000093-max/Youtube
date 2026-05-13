@@ -320,6 +320,45 @@ class VideoProducer:
             f.write("\n".join(lines))
         return srt_path
 
+
+    def burn_subtitles(self, video_path: str, srt_path: str,
+                       output_path: str, shorts: bool = False) -> str:
+        font_size = 22 if shorts else 18
+        subtitle_filter = (
+            f"subtitles={srt_path}:force_style='"
+            f"FontSize={font_size},"
+            f"FontName=DejaVu Sans,"
+            f"PrimaryColour=&H00FFFFFF,"
+            f"OutlineColour=&H00000000,"
+            f"BackColour=&H60000000,"
+            f"Outline=1,"
+            f"Shadow=0,"
+            f"Alignment=2,"
+            f"MarginV=40,"
+            f"MarginL=30,"
+            f"MarginR=30'"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-i", video_path,
+            "-vf", subtitle_filter,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "copy", "-movflags", "+faststart",
+            output_path
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode == 0 and os.path.exists(output_path) \
+           and os.path.getsize(output_path) > 50000:
+            log.info("✅ Subtitles burned")
+            return output_path
+        log.warning(f"Subtitle burn failed — using original: {r.stderr[-200:]}")
+        return video_path
+
+    def create_thumbnail(self, title, output_path):
+        style = random.choice(THUMBNAIL_STYLES)
+        W, H = 2560, 1440
+        img = Image.new("RGB", (W, H), color=style["bg"])
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, 16, H], fill=style["accent"])
         draw.rectangle([60, 60, 520, 160], fill=style["accent"])
         draw.text((100, 84), "● TRUE STORY", fill="white", font=_find_font(52))
         lines = textwrap.wrap(title.upper(), width=25)[:3]
@@ -340,6 +379,7 @@ class VideoProducer:
         img.save(output_path, "JPEG", quality=97, subsampling=0)
         log.info("✅ Thumbnail saved")
         return output_path
+
 
     def produce(self, script_data, shorts=False):
         topic    = script_data["topic"]
