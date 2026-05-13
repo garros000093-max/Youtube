@@ -265,6 +265,91 @@ class VideoProducer:
 
         return output_path
 
+
+    def generate_subtitles(self, audio_path: str, script: str) -> str:
+        """Generate SRT subtitles from script text timed to audio"""
+        import math
+        duration = get_duration(audio_path)
+        words = script.split()
+        total_words = len(words)
+        
+        if total_words == 0:
+            return ""
+        
+        # Average words per second based on audio duration
+        wps = total_words / duration
+        
+        srt_lines = []
+        idx = 1
+        chunk_size = 6  # words per subtitle line
+        
+        for i in range(0, total_words, chunk_size):
+            chunk = words[i:i + chunk_size]
+            text = " ".join(chunk)
+            
+            start_sec = (i / total_words) * duration
+            end_sec = min(((i + chunk_size) / total_words) * duration, duration)
+            
+            def fmt_time(s):
+                h = int(s // 3600)
+                m = int((s % 3600) // 60)
+                sec = int(s % 60)
+                ms = int((s % 1) * 1000)
+                return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
+            
+            srt_lines.append(f"{idx}")
+            srt_lines.append(f"{fmt_time(start_sec)} --> {fmt_time(end_sec)}")
+            srt_lines.append(text)
+            srt_lines.append("")
+            idx += 1
+        
+        srt_path = "/tmp/subtitles.srt"
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(srt_lines))
+        
+        log.info(f"✅ Subtitles generated: {idx-1} lines")
+        return srt_path
+
+    def burn_subtitles(self, video_path: str, srt_path: str, 
+                       output_path: str, shorts: bool = False) -> str:
+        """Burn subtitles into video with styled captions"""
+        W = 1080 if shorts else 1920
+        font_size = 55 if shorts else 45
+        
+        # Style: white text, black outline, centered bottom
+        subtitle_filter = (
+            f"subtitles={srt_path}:force_style='"
+            f"FontSize={font_size},"
+            f"FontName=DejaVu Sans Bold,"
+            f"PrimaryColour=&H00FFFFFF,"   # White text
+            f"OutlineColour=&H00000000,"   # Black outline
+            f"BackColour=&H80000000,"      # Semi-transparent background
+            f"Outline=3,"
+            f"Shadow=1,"
+            f"Alignment=2,"               # Bottom center
+            f"MarginV=60'"
+        )
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vf", subtitle_filter,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if r.returncode == 0 and os.path.exists(output_path) \
+           and os.path.getsize(output_path) > 50000:
+            log.info("✅ Subtitles burned into video")
+            return output_path
+        else:
+            log.warning(f"Subtitle burn failed — returning original: {r.stderr[-200:]}")
+            return video_path
+
     def create_thumbnail(self, title, output_path):
         style = random.choice(THUMBNAIL_STYLES)
         W, H = 2560, 1440
@@ -320,4 +405,13 @@ class VideoProducer:
 
         self.build_video(script_data["audio_path"], urls, vp, shorts)
         self.create_thumbnail(script_data["title"][:50], tp)
+        
+        # Add subtitles if script is available
+        script_text = script_data.get("script", "")
+        if script_text:
+            srt_path = self.generate_subtitles(script_data["audio_path"], script_text)
+            if srt_path:
+                vp_sub = vp.replace(".mp4", "_sub.mp4")
+                vp = self.burn_subtitles(vp, srt_path, vp_sub, shorts)
+        
         return vp, tp
