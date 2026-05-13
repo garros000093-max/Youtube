@@ -39,17 +39,20 @@ class ScriptGenerator:
 
     def write_script(self, topic: dict, shorts: bool = False) -> str:
         if shorts:
-            prompt = f"""Write a 2-minute YouTube Shorts script about: "{topic['trend']}"
+            prompt = f"""Write a 3-minute YouTube Shorts script about: "{topic['trend']}"
 
 RULES:
-- Hook in the FIRST 3 seconds — must stop the scroll
-- Start with shocking statement
-- Build tension every 15 seconds
-- End with shocking twist or cliffhanger
-- Short punchy sentences only
-- American English, dramatic, fast-paced
-- Length: EXACTLY 250-280 words
-- Narration ONLY, no stage directions"""
+- Hook in the FIRST 3 seconds — must stop the scroll immediately
+- Start with the most shocking statement possible
+- Build tension every 20 seconds — never let it drop
+- Add a mini-cliffhanger every 30 seconds to keep watching
+- End with the most shocking twist or revelation
+- Short punchy sentences — max 10 words per sentence
+- American English, dramatic, fast-paced narration
+- Length: EXACTLY 420-450 words (for ~3 minutes at natural pace)
+- Narration ONLY — no stage directions, no brackets
+
+Start immediately with the hook. Make it impossible to stop watching."""
         else:
             prompt = f"""Write a 10-12 minute YouTube video script about: "{topic['title']}"
 Topic: {topic['trend']}

@@ -1,6 +1,5 @@
 """
-YouTube Automation Bot - Telegram Delivery Mode
-Runs ONCE on startup, then waits for scheduled times only
+YouTube Bot - Shorts ONLY mode (max duration for maximum reach)
 """
 
 import os
@@ -25,7 +24,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8470062315:AAE1oSfBhIITjsJCZ6V2BSQo
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "2064937908")
 API       = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Flag to prevent concurrent pipeline runs
 pipeline_running = False
 
 
@@ -42,7 +40,7 @@ def tg_file(path: str, kind: str, caption: str = ""):
     try:
         with open(path, "rb") as f:
             endpoint = "sendVideo" if kind == "video" else "sendPhoto"
-            field    = "video"    if kind == "video" else "photo"
+            field    = "video" if kind == "video" else "photo"
             r = requests.post(f"{API}/{endpoint}",
                 data={"chat_id": CHAT_ID, "caption": caption[:1024],
                       "supports_streaming": True},
@@ -51,7 +49,6 @@ def tg_file(path: str, kind: str, caption: str = ""):
         if r.status_code == 200:
             log.info(f"✅ Sent {kind} to Telegram")
             return True
-        # Fallback: document
         with open(path, "rb") as f:
             requests.post(f"{API}/sendDocument",
                 data={"chat_id": CHAT_ID, "caption": caption[:1024]},
@@ -63,27 +60,25 @@ def tg_file(path: str, kind: str, caption: str = ""):
         return False
 
 
-def run_pipeline(shorts: bool = False):
+def run_shorts():
     global pipeline_running
-
     if pipeline_running:
         log.warning("Pipeline already running — skipping")
         return
 
     pipeline_running = True
-    kind = "📱 SHORTS" if shorts else "🎬 LONG VIDEO"
-    log.info(f"Starting {kind} Pipeline...")
-    tg_message(f"⏳ {kind} pipeline starting...")
+    log.info("📱 Starting Shorts Pipeline...")
+    tg_message("⏳ 📱 Shorts pipeline starting...")
 
     try:
         finder    = TrendFinder()
-        topic     = finder.get_best_topic(shorts=shorts)
+        topic     = finder.get_best_topic(shorts=True)
 
         generator = ScriptGenerator()
-        data      = generator.generate(topic, shorts=shorts)
+        data      = generator.generate(topic, shorts=True)
 
         producer  = VideoProducer()
-        video_path, thumb_path = producer.produce(data, shorts=shorts)
+        video_path, thumb_path = producer.produce(data, shorts=True)
 
         title       = data.get("title", topic["title"])
         description = data.get("description", "")
@@ -91,14 +86,16 @@ def run_pipeline(shorts: bool = False):
         tags_str    = ", ".join(tags[:20])
 
         yt_info = f"""━━━━━━━━━━━━━━━━━━━━━━━━━
-{kind} — READY TO UPLOAD
+📱 SHORTS — READY TO UPLOAD
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📌 <b>TITLE:</b>
-<code>{title[:100]}</code>
+<code>{title[:100]} #shorts</code>
 
 📝 <b>DESCRIPTION:</b>
-<code>{description[:800]}</code>
+<code>{description[:800]}
+
+#shorts #TrueCrime #Mystery #Viral</code>
 
 🏷️ <b>TAGS:</b>
 <code>{tags_str}</code>
@@ -106,7 +103,6 @@ def run_pipeline(shorts: bool = False):
 📂 Category: People & Blogs
 🌍 Language: English
 👶 Made for kids: NO
-{'🔖 Add #shorts to title' if shorts else ''}
 
 ⬆️ https://studio.youtube.com
 ━━━━━━━━━━━━━━━━━━━━━━━━━"""
@@ -116,15 +112,15 @@ def run_pipeline(shorts: bool = False):
         if os.path.exists(thumb_path):
             tg_file(thumb_path, "photo", caption=f"🖼️ {title[:80]}")
 
-        tg_message("📤 Sending video... (may take a few minutes)")
-        tg_file(video_path, "video", caption=f"{'📱' if shorts else '🎬'} {title[:200]}")
+        tg_message("📤 Sending video...")
+        tg_file(video_path, "video", caption=f"📱 {title[:200]} #shorts")
 
-        log.info(f"✅ {kind} complete!")
-        tg_message(f"✅ {kind} done!")
+        log.info("✅ Shorts complete!")
+        tg_message("✅ Shorts done! Upload to YouTube Studio.")
 
     except Exception as e:
-        log.error(f"❌ Pipeline failed: {e}", exc_info=True)
-        tg_message(f"❌ Pipeline failed: {str(e)[:300]}")
+        log.error(f"❌ Shorts failed: {e}", exc_info=True)
+        tg_message(f"❌ Shorts failed: {str(e)[:300]}")
     finally:
         pipeline_running = False
 
@@ -139,9 +135,8 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    log.info("🤖 Bot starting — Telegram delivery mode")
+    log.info("🤖 Bot starting — Shorts ONLY mode (3 per day)")
 
-    # Health server
     threading.Thread(
         target=lambda: HTTPServer(
             ("0.0.0.0", int(os.getenv("PORT", 8080))), HealthHandler
@@ -149,22 +144,23 @@ if __name__ == "__main__":
         daemon=True
     ).start()
 
-    tg_message("🚀 Bot started!\n📅 Shorts: daily 15:00 Fez\n🎬 Long video: every 2 days 21:00 Fez")
+    tg_message("🚀 Bot started!\n📱 Shorts only: 3x daily\n⏰ 09:00 | 15:00 | 21:00 Fez time")
 
-    # Run ONCE on startup in background thread
-    threading.Thread(target=lambda: run_pipeline(shorts=True), daemon=True).start()
-    time.sleep(120)  # Wait 2 min before long video
-    threading.Thread(target=lambda: run_pipeline(shorts=False), daemon=True).start()
+    # Run immediately on startup
+    threading.Thread(target=run_shorts, daemon=True).start()
 
-    # Schedule (UTC = Fez - 1h)
+    # Schedule 3 shorts per day (Fez = UTC+1)
+    schedule.every().day.at("08:00").do(
+        lambda: threading.Thread(target=run_shorts, daemon=True).start()
+    )  # 09:00 Fez
     schedule.every().day.at("14:00").do(
-        lambda: threading.Thread(target=lambda: run_pipeline(shorts=True), daemon=True).start()
-    )
-    schedule.every(2).days.at("20:00").do(
-        lambda: threading.Thread(target=lambda: run_pipeline(shorts=False), daemon=True).start()
-    )
+        lambda: threading.Thread(target=run_shorts, daemon=True).start()
+    )  # 15:00 Fez
+    schedule.every().day.at("20:00").do(
+        lambda: threading.Thread(target=run_shorts, daemon=True).start()
+    )  # 21:00 Fez
 
-    log.info("⏰ Scheduler running... Next: 15:00 Fez (shorts) | 21:00 Fez (long)")
+    log.info("⏰ Schedule: 09:00 | 15:00 | 21:00 Fez time")
 
     while True:
         schedule.run_pending()
