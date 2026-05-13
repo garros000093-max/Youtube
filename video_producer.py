@@ -281,7 +281,7 @@ class VideoProducer:
         
         srt_lines = []
         idx = 1
-        chunk_size = 6  # words per subtitle line
+        chunk_size = 10  # words per subtitle line
         
         for i in range(0, total_words, chunk_size):
             chunk = words[i:i + chunk_size]
@@ -313,21 +313,22 @@ class VideoProducer:
     def burn_subtitles(self, video_path: str, srt_path: str, 
                        output_path: str, shorts: bool = False) -> str:
         """Burn subtitles into video with styled captions"""
-        W = 1080 if shorts else 1920
-        font_size = 55 if shorts else 45
+        font_size = 22 if shorts else 18
         
-        # Style: white text, black outline, centered bottom
+        # Style: small white text at bottom, black outline, 10 words per line
         subtitle_filter = (
             f"subtitles={srt_path}:force_style='"
             f"FontSize={font_size},"
-            f"FontName=DejaVu Sans Bold,"
-            f"PrimaryColour=&H00FFFFFF,"   # White text
-            f"OutlineColour=&H00000000,"   # Black outline
-            f"BackColour=&H80000000,"      # Semi-transparent background
-            f"Outline=3,"
-            f"Shadow=1,"
-            f"Alignment=2,"               # Bottom center
-            f"MarginV=60'"
+            f"FontName=DejaVu Sans,"
+            f"PrimaryColour=&H00FFFFFF,"
+            f"OutlineColour=&H00000000,"
+            f"BackColour=&H60000000,"
+            f"Outline=1,"
+            f"Shadow=0,"
+            f"Alignment=2,"
+            f"MarginV=40,"
+            f"MarginL=30,"
+            f"MarginR=30'"
         )
         
         cmd = [
