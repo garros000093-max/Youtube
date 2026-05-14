@@ -321,26 +321,55 @@ class VideoProducer:
         return srt_path
 
 
+    def srt_to_ass(self, srt_path: str, shorts: bool = False) -> str:
+        fs = 18 if shorts else 14
+        h  = "1920" if shorts else "1080"
+        header = (
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\n"
+            f"PlayResY: {h}\nWrapStyle: 1\n\n"
+            "[V4+ Styles]\n"
+            "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
+            "OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,"
+            "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+            "Alignment,MarginL,MarginR,MarginV,Encoding\n"
+            f"Style: Default,DejaVu Sans,{fs},&H00FFFFFF,&H000000FF,"
+            "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,40,1\n\n"
+            "[Events]\n"
+            "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+        )
+        def to_ass_time(t):
+            t = t.strip().replace(",", ".")
+            p = t.split(":")
+            h2, m2 = int(p[0]), int(p[1])
+            s2 = float(p[2])
+            return f"{h2}:{m2:02d}:{s2:05.2f}"
+        events = []
+        try:
+            with open(srt_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+            for block in raw.strip().split("\n\n"):
+                lines = block.strip().split("\n")
+                if len(lines) >= 3 and "-->" in lines[1]:
+                    times = lines[1].split("-->")
+                    start = to_ass_time(times[0])
+                    end   = to_ass_time(times[1])
+                    text  = " ".join(lines[2:]).replace("{","").replace("}","")
+                    events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+        except Exception as e:
+            log.warning(f"SRT parse error: {e}")
+            return srt_path
+        ass_path = "/tmp/subtitles.ass"
+        with open(ass_path, "w", encoding="utf-8") as f:
+            f.write(header + "\n".join(events))
+        log.info(f"ASS: {len(events)} subtitle lines")
+        return ass_path
+
     def burn_subtitles(self, video_path: str, srt_path: str,
                        output_path: str, shorts: bool = False) -> str:
-        font_size = 22 if shorts else 18
-        subtitle_filter = (
-            f"subtitles={srt_path}:force_style='"
-            f"FontSize={font_size},"
-            f"FontName=DejaVu Sans,"
-            f"PrimaryColour=&H00FFFFFF,"
-            f"OutlineColour=&H00000000,"
-            f"BackColour=&H60000000,"
-            f"Outline=1,"
-            f"Shadow=0,"
-            f"Alignment=2,"
-            f"MarginV=40,"
-            f"MarginL=30,"
-            f"MarginR=30'"
-        )
+        ass_path = self.srt_to_ass(srt_path, shorts)
         cmd = [
             "ffmpeg", "-y", "-i", video_path,
-            "-vf", subtitle_filter,
+            "-vf", f"ass={ass_path}",
             "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-c:a", "copy", "-movflags", "+faststart",
             output_path
@@ -350,8 +379,9 @@ class VideoProducer:
            and os.path.getsize(output_path) > 50000:
             log.info("✅ Subtitles burned")
             return output_path
-        log.warning(f"Subtitle burn failed — using original: {r.stderr[-200:]}")
+        log.warning(f"Subtitle burn failed: {r.stderr[-200:]}")
         return video_path
+
 
     def create_thumbnail(self, title, output_path):
         style = random.choice(THUMBNAIL_STYLES)
