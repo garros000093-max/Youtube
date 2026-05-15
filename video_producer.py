@@ -283,11 +283,14 @@ class VideoProducer:
                     response_format="srt"
                 )
 
+            # response_format="srt" returns a string directly
+            srt_text = transcript if isinstance(transcript, str) else transcript.text
+            
             srt_path = "/tmp/subtitles.srt"
             with open(srt_path, "w", encoding="utf-8") as f:
-                f.write(transcript)
+                f.write(srt_text)
 
-            log.info("✅ Whisper subtitles generated")
+            log.info(f"✅ Whisper subtitles generated ({len(srt_text)} chars)")
             return srt_path
 
         except Exception as e:
@@ -322,7 +325,7 @@ class VideoProducer:
 
 
     def srt_to_ass(self, srt_path: str, shorts: bool = False) -> str:
-        fs = 22 if shorts else 14
+        fs = 38 if shorts else 28
         h  = "1920" if shorts else "1080"
         header = (
             "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\n"
@@ -332,7 +335,7 @@ class VideoProducer:
             "OutlineColour,BackColour,Bold,Italic,Underline,Strikeout,"
             "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
             "Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Default,DejaVu Sans,{fs},&H00FFFFFF,&H000000FF,"
+            f"Style: Default,DejaVu Sans Bold,{fs},&H00FFFFFF,&H000000FF,"
             "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,40,1\n\n"
             "[Events]\n"
             "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
