@@ -322,7 +322,7 @@ class VideoProducer:
 
 
     def srt_to_ass(self, srt_path: str, shorts: bool = False) -> str:
-        fs = 18 if shorts else 14
+        fs = 22 if shorts else 14
         h  = "1920" if shorts else "1080"
         header = (
             "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\n"
