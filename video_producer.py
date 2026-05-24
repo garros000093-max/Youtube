@@ -485,9 +485,9 @@ class VideoProducer:
                 if total_added >= duration:
                     break
 
+        
         with open(concat_file, "w") as f:
-            f.write("
-".join(lines))
+            f.write("\n".join(lines))
 
         # Final merge
         cmd = [
