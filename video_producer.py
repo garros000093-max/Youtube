@@ -121,7 +121,46 @@ class VideoProducer:
             log.warning(f"Audio mix failed — using voice only: {r.stderr[-200:]}")
             return voice_path
 
+    def search_pixabay_videos(self, query, count=5, portrait=False):
+        """Search Pixabay for free videos — much more reliable than Pexels"""
+        api_key = os.getenv("PIXABAY_API_KEY", "")
+        if not api_key:
+            log.warning("PIXABAY_API_KEY not set")
+            return []
+        try:
+            orientation = "vertical" if portrait else "horizontal"
+            r = requests.get(
+                "https://pixabay.com/api/videos/",
+                params={
+                    "key": api_key,
+                    "q": query,
+                    "per_page": count,
+                    "orientation": orientation,
+                    "video_type": "film",
+                    "safesearch": "true",
+                    "order": "popular"
+                },
+                timeout=15
+            )
+            r.raise_for_status()
+            links = []
+            for hit in r.json().get("hits", []):
+                videos = hit.get("videos", {})
+                # Pick medium quality for reliability
+                for quality in ["medium", "small", "large"]:
+                    v = videos.get(quality, {})
+                    url = v.get("url", "")
+                    if url:
+                        links.append(url)
+                        break
+            log.info(f"Pixabay '{query}': {len(links)} videos")
+            return links
+        except Exception as e:
+            log.warning(f"Pixabay: {e}")
+            return []
+
     def search_pexels_images(self, query, count=8, portrait=False):
+        """Fallback: Pexels images if no videos available"""
         if not PEXELS_API_KEY:
             return []
         try:
@@ -139,10 +178,10 @@ class VideoProducer:
                 url = src.get("large2x") or src.get("large") or src.get("medium")
                 if url:
                     links.append(url)
-            log.info(f"Pexels '{query}': {len(links)} images")
+            log.info(f"Pexels images '{query}': {len(links)}")
             return links
         except Exception as e:
-            log.warning(f"Pexels: {e}")
+            log.warning(f"Pexels images: {e}")
             return []
 
     def download_image(self, url, path):
@@ -172,8 +211,8 @@ class VideoProducer:
             return False
 
     def build_video(self, audio_path, image_urls, output_path, shorts=False):
-        duration = get_duration(audio_path)
-        log.info(f"Audio: {duration:.1f}s")
+        duration = min(get_duration(audio_path), 170.0)
+        log.info(f"Audio: {duration:.1f}s (capped at 170s)")
 
         W, H = (1080, 1920) if shorts else (1920, 1080)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -385,6 +424,93 @@ class VideoProducer:
         log.warning(f"Subtitle burn failed: {r.stderr[-200:]}")
         return video_path
 
+
+    def build_video_from_clips(self, audio_path, video_urls, output_path, shorts=False):
+        """Build video from Pixabay video clips"""
+        duration = min(get_duration(audio_path), 170.0)
+        log.info(f"Building from clips, audio: {duration:.1f}s")
+        W, H = (1080, 1920) if shorts else (1920, 1080)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # Download clips
+        downloaded = []
+        for i, url in enumerate(video_urls[:8]):
+            path = f"/tmp/clip_{i}.mp4"
+            try:
+                r = requests.get(url, stream=True, timeout=60)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        f.write(chunk)
+                if os.path.getsize(path) > 10000:
+                    downloaded.append(path)
+                    log.info(f"Downloaded clip {i+1}")
+            except Exception as e:
+                log.warning(f"Clip {i+1} failed: {e}")
+
+        if not downloaded:
+            log.warning("No clips — fallback to images")
+            return self.build_video(audio_path, [], output_path, shorts)
+
+        # Normalize each clip to target resolution
+        normalized = []
+        for i, clip in enumerate(downloaded):
+            norm = f"/tmp/norm_{i}.mp4"
+            vf = (
+                f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},setsar=1,fps=25,format=yuv420p"
+            )
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", clip, "-vf", vf,
+                 "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                 "-an", norm],
+                capture_output=True, text=True, timeout=180
+            )
+            if r.returncode == 0 and os.path.exists(norm) and os.path.getsize(norm) > 5000:
+                normalized.append(norm)
+                log.info(f"Normalized clip {i+1}")
+
+        if not normalized:
+            log.warning("Normalization failed — fallback")
+            return self.build_video(audio_path, [], output_path, shorts)
+
+        # Loop clips to fill audio duration
+        concat_file = "/tmp/clips_concat.txt"
+        total_added, lines = 0.0, []
+        while total_added < duration:
+            for norm in normalized:
+                clip_dur = get_duration(norm)
+                lines.append(f"file '{norm}'")
+                total_added += clip_dur
+                if total_added >= duration:
+                    break
+
+        with open(concat_file, "w") as f:
+            f.write("
+".join(lines))
+
+        # Final merge
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-i", audio_path,
+            "-t", str(duration),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            "-map", "0:v:0", "-map", "1:a:0",
+            output_path
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if r.returncode == 0 and os.path.exists(output_path)            and os.path.getsize(output_path) > 50000:
+            mb = os.path.getsize(output_path) / 1024 / 1024
+            log.info(f"✅ Video from clips: {mb:.1f} MB")
+            return output_path
+
+        log.warning(f"Clips merge failed: {r.stderr[-200:]}")
+        return self.build_video(audio_path, [], output_path, shorts)
 
     def create_thumbnail(self, title, output_path):
         style = random.choice(THUMBNAIL_STYLES)
