@@ -486,8 +486,7 @@ class VideoProducer:
                     break
 
         with open(concat_file, "w") as f:
-            f.write("
-".join(lines))
+            f.write("\n".join(lines))
 
         # Final merge
         cmd = [
