@@ -159,6 +159,39 @@ class VideoProducer:
             log.warning(f"Pixabay: {e}")
             return []
 
+    def search_pixabay_images(self, query, count=8, portrait=False):
+        """Search Pixabay for free images — reliable and high quality"""
+        api_key = os.getenv("PIXABAY_API_KEY", "")
+        if not api_key:
+            return []
+        try:
+            orientation = "vertical" if portrait else "horizontal"
+            r = requests.get(
+                "https://pixabay.com/api/",
+                params={
+                    "key": api_key,
+                    "q": query,
+                    "per_page": count,
+                    "orientation": orientation,
+                    "image_type": "photo",
+                    "safesearch": "true",
+                    "order": "popular",
+                    "min_width": 1080,
+                },
+                timeout=15
+            )
+            r.raise_for_status()
+            links = []
+            for hit in r.json().get("hits", []):
+                url = hit.get("largeImageURL") or hit.get("webformatURL")
+                if url:
+                    links.append(url)
+            log.info(f"Pixabay images '{query}': {len(links)}")
+            return links
+        except Exception as e:
+            log.warning(f"Pixabay images: {e}")
+            return []
+
     def search_pexels_images(self, query, count=8, portrait=False):
         """Fallback: Pexels images if no videos available"""
         if not PEXELS_API_KEY:
@@ -560,24 +593,22 @@ class VideoProducer:
         vp  = str(self.output_dir / f"video_{sfx}.mp4")
         tp  = str(self.output_dir / f"thumb_{sfx}.jpg")
 
-        # Try Pixabay Videos first
-        video_urls = []
+        # Use Pixabay images (reliable) with Ken Burns effect
+        image_urls = []
         for q in [visual, trend, "cinematic dark", "dramatic nature"]:
-            video_urls += self.search_pixabay_videos(q, count=4, portrait=shorts)
-            if len(video_urls) >= 8:
+            image_urls += self.search_pixabay_images(q, count=4, portrait=shorts)
+            if len(image_urls) >= 12:
                 break
 
-        if video_urls:
-            log.info(f"Using {len(video_urls)} Pixabay videos")
-            self.build_video_from_clips(script_data["audio_path"], video_urls, vp, shorts)
-        else:
-            log.warning("No Pixabay videos — falling back to images")
-            image_urls = []
+        # Fallback to Pexels if Pixabay fails
+        if not image_urls:
+            log.warning("Pixabay images failed — trying Pexels")
             for q in [visual, trend, "cinematic dark"]:
                 image_urls += self.search_pexels_images(q, count=4, portrait=shorts)
                 if len(image_urls) >= 8:
                     break
-            self.build_video(script_data["audio_path"], image_urls, vp, shorts)
+
+        self.build_video(script_data["audio_path"], image_urls, vp, shorts)
 
         self.create_thumbnail(script_data["title"][:50], tp)
 
