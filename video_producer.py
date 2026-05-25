@@ -485,9 +485,9 @@ class VideoProducer:
                 if total_added >= duration:
                     break
 
-        
         with open(concat_file, "w") as f:
-            f.write("\n".join(lines))
+            f.write("
+".join(lines))
 
         # Final merge
         cmd = [
@@ -546,35 +546,49 @@ class VideoProducer:
         trend    = self._clean_query(topic.get("trend", ""))
 
         cat_map = {
-            "true crime story":         "crime investigation dark",
+            "true crime story":         "crime investigation",
             "scary reddit story":       "dark forest night",
-            "mysterious disappearance": "missing person forest",
+            "mysterious disappearance": "missing person",
             "unsolved mystery":         "detective mystery",
-            "dark secret revealed":     "shadow secret dark",
+            "dark secret revealed":     "shadow secret",
             "survival story":           "wilderness survival",
-            "paranormal experience":    "haunted ghost dark",
-            "shocking true story":      "dramatic cinematic dark",
+            "paranormal experience":    "haunted ghost",
+            "shocking true story":      "dramatic cinematic",
         }
-        visual = cat_map.get(category, "mystery dramatic dark")
-
-        urls = []
-        for q in [visual, trend, "cinematic dark", "dramatic sky"]:
-            urls += self.search_pexels_images(q, count=4, portrait=shorts)
-            if len(urls) >= 10: break
+        visual = cat_map.get(category, "mystery dramatic")
 
         sfx = "shorts" if shorts else "main"
         vp  = str(self.output_dir / f"video_{sfx}.mp4")
         tp  = str(self.output_dir / f"thumb_{sfx}.jpg")
 
-        self.build_video(script_data["audio_path"], urls, vp, shorts)
+        # Try Pixabay Videos first
+        video_urls = []
+        for q in [visual, trend, "cinematic dark", "dramatic nature"]:
+            video_urls += self.search_pixabay_videos(q, count=4, portrait=shorts)
+            if len(video_urls) >= 8:
+                break
+
+        if video_urls:
+            log.info(f"Using {len(video_urls)} Pixabay videos")
+            self.build_video_from_clips(script_data["audio_path"], video_urls, vp, shorts)
+        else:
+            log.warning("No Pixabay videos — falling back to images")
+            image_urls = []
+            for q in [visual, trend, "cinematic dark"]:
+                image_urls += self.search_pexels_images(q, count=4, portrait=shorts)
+                if len(image_urls) >= 8:
+                    break
+            self.build_video(script_data["audio_path"], image_urls, vp, shorts)
+
         self.create_thumbnail(script_data["title"][:50], tp)
-        
-        # Add subtitles if script is available
+
+        # Add Whisper subtitles — use original voice (not mixed audio)
+        original_voice = script_data["audio_path"]  # Use pure voice, not music mix
         script_text = script_data.get("script", "")
         if script_text:
-            srt_path = self.generate_subtitles(script_data["audio_path"], script_text)
+            srt_path = self.generate_subtitles(original_voice, script_text)
             if srt_path:
                 vp_sub = vp.replace(".mp4", "_sub.mp4")
                 vp = self.burn_subtitles(vp, srt_path, vp_sub, shorts)
-        
+
         return vp, tp
